@@ -7,9 +7,12 @@ import (
 	"legacy-messenger-control-plane/internal/adapters/fake"
 	"legacy-messenger-control-plane/internal/adapters/http/client"
 	"legacy-messenger-control-plane/internal/adapters/redis"
+	"legacy-messenger-control-plane/internal/adapters/sessionprovider"
 	"legacy-messenger-control-plane/internal/adapters/ssh"
 	"legacy-messenger-control-plane/internal/domain"
 	"legacy-messenger-control-plane/internal/ports"
+	"net/http"
+	"time"
 )
 
 type Clients struct {
@@ -26,15 +29,26 @@ func NewClients(ctx context.Context, cfg *configs.Config) (*Clients, error) {
 
 	var ecsClient ports.ECSPort
 
+	httpClient := &http.Client{
+		Timeout: 3 * time.Second,
+	}
+
+	providerClient := sessionprovider.NewClient(
+		cfg.SessionProvider.URL,
+		httpClient,
+	)
+
+	initialStates := make(map[string]domain.ECSServiceControlState)
+	initialStates["ws-service"] = domain.ECSServiceControlState{
+		DesiredCount: 0,
+		RunningCount: 0,
+		PendingCount: 0,
+	}
+
 	if cfg.Mock {
 		ecsClient = fake.NewECSClient(
-			map[string]domain.ECSServiceControlState{
-				"ws-service": {
-					DesiredCount: 0,
-					RunningCount: 0,
-					PendingCount: 0,
-				},
-			},
+			initialStates,
+			providerClient,
 		)
 	} else {
 		client, err := aws.NewECSClient(ctx, cfg)

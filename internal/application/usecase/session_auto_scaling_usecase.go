@@ -71,7 +71,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		u.ecsCfg.ClusterName,
 		serviceDef.ECSServiceName,
 	)
-	fmt.Printf("[ecs state] desiredCount:%d runningCount : %d, pendingCount : %d\n", ecsState.DesiredCount, ecsState.RunningCount, ecsState.PendingCount)
+	//fmt.Printf("[ecs state] desiredCount:%d runningCount : %d, pendingCount : %d\n", ecsState.DesiredCount, ecsState.RunningCount, ecsState.PendingCount)
 
 	if err != nil {
 		return domain.SessionAutoScalingResult{},
@@ -96,7 +96,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 	// 전체 세션의 수, task당 평균 세션 수, 세션이 적은 task의 순서로 정의된 slice, 정상적으로 보고하는 task의 비율
 	taskSessionInfo := calculateTotalSessionCount(reported, normalTask, int(ecsState.RunningCount))
 
-	fmt.Printf("[session count] total : %d, avg : %d, reportCoverage : %0.1f\n", taskSessionInfo.TotalSessionCount, taskSessionInfo.AvgSessionCount, taskSessionInfo.ReportCoverage)
+	//f("[session count] total : %d, avg : %d, reportCoverage : %0.1f\n", taskSessionInfo.TotalSessionCount, taskSessionInfo.AvgSessionCount, taskSessionInfo.ReportCoverage)
 
 	// 7. 현재 시점에 요구되는 task수 계산
 	requiredTaskCount := calculateRequiredTaskCount(
@@ -106,7 +106,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		u.autoScale.MinTaskCount,
 		u.autoScale.MaxTaskCount,
 	)
-	fmt.Printf("[required task count] count : %d\n", requiredTaskCount)
+	//fmt.Printf("[required task count] count : %d\n", requiredTaskCount)
 
 	// 8. 현재 desiredCount와 필요한 Task 수를 비교
 	demendResult := evaluateScalingDemand(
@@ -116,7 +116,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		int(ecsState.RunningCount),
 		requiredTaskCount,
 	)
-	fmt.Printf("[scale demend] action : %s\n", demendResult.Action)
+	//fmt.Printf("[scale demend] action : %s\n", demendResult.Action)
 
 	var result domain.SessionAutoScalingResult
 
@@ -156,14 +156,14 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 				executedAt,
 			)
 
-			fmt.Printf(
-				"[scaling executed] serviceName=%s action=%s currentDesiredCount=%d recommendedDesiredCount=%d executedAt=%s\n",
-				serviceName,
-				result.Action,
-				result.CurrentDesiredCount,
-				result.RecommendedDesiredCount,
-				executedAt.Format(time.RFC3339),
-			)
+			// fmt.Printf(
+			// 	"[scaling executed] serviceName=%s action=%s currentDesiredCount=%d recommendedDesiredCount=%d executedAt=%s\n",
+			// 	serviceName,
+			// 	result.Action,
+			// 	result.CurrentDesiredCount,
+			// 	result.RecommendedDesiredCount,
+			// 	executedAt.Format(time.RFC3339),
+			// )
 		}
 	}
 

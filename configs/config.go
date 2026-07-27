@@ -17,6 +17,7 @@ type Config struct {
 	Redis           *RedisConfig
 	AutoScale       *AutoScaleConfig
 	Mock            bool
+	SessionProvider *SessionProvider
 }
 
 type ServerConfig struct {
@@ -29,6 +30,10 @@ type AWSConfig struct {
 
 type ECSConfig struct {
 	ClusterName string
+}
+
+type SessionProvider struct {
+	URL string
 }
 
 // Control Plane이 관리할 ECS 서비스 목록과 운영 정책을 메모리에 올려두는 객체
@@ -56,6 +61,7 @@ func Load() (*Config, error) {
 	redis, err := initRedis()
 	autoScaling := initAuthScaling()
 	mock := initMock()
+	sessionProvider := initSessionProvider()
 
 	if err != nil {
 		return nil, err
@@ -70,6 +76,7 @@ func Load() (*Config, error) {
 		Redis:           redis,
 		AutoScale:       autoScaling,
 		Mock:            mock,
+		SessionProvider: sessionProvider,
 	}, nil
 }
 
@@ -196,4 +203,11 @@ func initAuthScaling() *AutoScaleConfig {
 
 func initMock() bool {
 	return true
+}
+
+func initSessionProvider() *SessionProvider {
+	url := os.Getenv("SESSION_PROVIDER_URL")
+	return &SessionProvider{
+		URL: url,
+	}
 }
