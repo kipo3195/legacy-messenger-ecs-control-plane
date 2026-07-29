@@ -372,16 +372,6 @@ func (c *redisClient) GetTaskSessionReportByTask(ctx context.Context, serviceNam
 		)
 	}
 
-	// log.Printf(
-	// 	"[redis] task session reports: serviceName=%s key=%s\n",
-	// 	serviceName,
-	// 	reportKey,
-	// )
-	// report 출력
-	// for _, v := range result {
-	// 	log.Printf("[redis] report : %s\n", v)
-	// }
-
 	for k, value := range result {
 		var report domain.SessionReport
 

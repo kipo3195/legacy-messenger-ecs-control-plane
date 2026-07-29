@@ -35,6 +35,8 @@ type ECSClient struct {
 	taskStartDelay time.Duration
 
 	taskRunningNotifier ports.TaskRunningNotifier
+
+	protectedTask map[string]struct{}
 }
 
 var _ ports.ECSPort = (*ECSClient)(nil)
@@ -120,61 +122,89 @@ func (c *ECSClient) UpdateServiceDesiredCount(
 			fmt.Errorf("fake ECS service not found: %s", serviceName)
 	}
 
-	if desiredCount <= int(state.DesiredCount) {
+	log.Printf("[점검] desiredCount : %d, state.DesiredCount : %d\n", desiredCount, state.DesiredCount)
+	if desiredCount < int(state.DesiredCount) {
+		log.Println("[FAKE - UpdateServiceDesiredCount] Scale out...")
 
-		return domain.ECSServiceControlState{},
-			fmt.Errorf(
-				"fake ECS scale-out requires desired count increase: service=%s current=%d requested=%d",
-				serviceName,
-				state.DesiredCount,
-				desiredCount,
-			)
-	}
-
-	currentTaskCount := int(
-		state.RunningCount + state.PendingCount,
-	)
-
-	missingTaskCount := desiredCount - currentTaskCount
-
-	state.DesiredCount = int32(desiredCount)
-
-	if missingTaskCount > 0 {
-		state.PendingCount += int32(missingTaskCount)
-	}
-
-	c.serviceStates[serviceName] = state
-	result := state
-
-	// missingTaskCount 목표 Task 수에서 이미 실행 중이거나 시작 중인 Task 수를 뺀 값
-	// desired 5, running 3, pending 1
-	// missingTaskCount = 5 - (3 + 1) = 1
-	//
-
-	taskIDs := make([]string, 0, missingTaskCount)
-
-	for i := 0; i < missingTaskCount; i++ {
-		taskID := createTaskID(serviceName)
-
-		now := time.Now()
-
-		c.tasks[taskID] = domain.TaskStatus{
-			TaskID:        taskID,
-			LastStatus:    "PENDING",
-			DesiredStatus: "RUNNING",
-			CreatedAt:     &now,
-		}
-		log.Printf("[UpdateServiceDesiredCount] new task ID : %s\n", taskID)
-		taskIDs = append(taskIDs, taskID)
-	}
-
-	for order, taskID := range taskIDs {
-		go c.transitionPendingTaskToRunning(
-			serviceName,
-			taskID,
-			order,
+		// 현재 전체 task
+		currentTaskCount := int(
+			state.RunningCount + state.PendingCount,
 		)
+
+		// auto scale 단계에서 필요한 count - 현재 전체 task => !!! 추가로 scale 해야될 task 수 !!!
+		// desired 5, running 3, pending 1
+		// missingTaskCount = 5 - (3 + 1) = 1
+		missingTaskCount := desiredCount - currentTaskCount
+
+		state.DesiredCount = int32(desiredCount)
+
+		if missingTaskCount > 0 {
+			// 확장 요청 할꺼니까 pending으로 처리하는 듯
+			// desired 5, running 3, pending 2로 만드나본데
+			state.PendingCount += int32(missingTaskCount)
+		}
+
+		c.serviceStates[serviceName] = state
+
+		taskIDs := make([]string, 0, missingTaskCount)
+
+		// 추가되어야 할 count
+		for i := 0; i < missingTaskCount; i++ {
+			taskID := createTaskID(serviceName)
+
+			now := time.Now()
+
+			c.tasks[taskID] = domain.TaskStatus{
+				TaskID:        taskID,
+				LastStatus:    "PENDING",
+				DesiredStatus: "RUNNING",
+				CreatedAt:     &now,
+			}
+			log.Printf("[UpdateServiceDesiredCount] new task ID : %s\n", taskID)
+			taskIDs = append(taskIDs, taskID)
+		}
+
+		// 추가 되어야 할 task
+		for order, taskID := range taskIDs {
+			go c.transitionPendingTaskToRunning(
+				serviceName,
+				taskID,
+				order,
+			)
+		}
+
+	} else if desiredCount == int(state.DesiredCount) {
+		log.Println("[FAKE - UpdateServiceDesiredCount] Keep...")
+	} else {
+		log.Println("[FAKE - UpdateServiceDesiredCount] Scale in...")
+		// DesiredCount 감소
+		// protected=false인 RUNNING task를 STOPPED 처리 (startDrain에서 protectedTask 선별)
+		// RunningCount 감소
+
+		if c.protectedTask == nil {
+			return domain.ECSServiceControlState{}, fmt.Errorf("fake ECS protectedTask is not found : %s", serviceName)
+		}
+
+		for _, v := range c.tasks {
+			task := v
+
+			if task.LastStatus != "RUNNING" {
+				continue
+			}
+
+			if _, exists := c.protectedTask[task.TaskID]; exists {
+				continue
+			}
+
+			log.Println("")
+
+		}
+
+		state.DesiredCount = int32(desiredCount)
+		state.RunningCount = int32(desiredCount)
 	}
+
+	result := state
 
 	return result, nil
 }
@@ -206,6 +236,7 @@ func (c *ECSClient) transitionPendingTaskToRunning(
 		return
 	}
 
+	// scale out 할때 missingTaskCount로 추가되어야 할 task는 LastStatus가 PENDING으로 생성됨.
 	if task.LastStatus != "PENDING" {
 		c.mu.Unlock()
 		return
@@ -219,6 +250,7 @@ func (c *ECSClient) transitionPendingTaskToRunning(
 
 	now := time.Now()
 
+	// 상태를 running으로 변경함.
 	task.LastStatus = "RUNNING"
 	task.StartedAt = &now
 
@@ -286,9 +318,20 @@ func (c *ECSClient) GetRunningTaskIDs(ctx context.Context, clusterName string, e
 }
 
 func (c *ECSClient) UpdateTaskProtection(ctx context.Context, clusterName string, protectedTaskIDs []string, flag bool) error {
+
+	temp := make(map[string]struct{}, len(protectedTaskIDs))
+
+	for _, v := range protectedTaskIDs {
+		temp[v] = struct{}{}
+	}
+
+	c.protectedTask = temp
+
 	return nil
 }
 
 func (c *ECSClient) DescribeTask(ctx context.Context, clusterName string, taskID string) (domain.ECSTask, error) {
-	return domain.ECSTask{}, nil
+	return domain.ECSTask{
+		PrivateIP: "127.0.0.1",
+	}, nil
 }

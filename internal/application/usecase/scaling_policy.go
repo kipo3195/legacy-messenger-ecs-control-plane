@@ -48,7 +48,7 @@ func NewScalingPolicy() *ScalingPolicy {
 		scaleInConsecutiveCount:  5,
 
 		scaleOutCooldown: 30 * time.Second,
-		scaleInCooldown:  5 * time.Minute,
+		scaleInCooldown:  1 * time.Minute,
 
 		minReportCoverage: 0.8,
 

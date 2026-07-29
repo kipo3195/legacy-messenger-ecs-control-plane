@@ -75,7 +75,7 @@ func NewClients(ctx context.Context, cfg *configs.Config) (*Clients, error) {
 		return nil, err
 	}
 
-	taskEndPointResolver := aws.NewECSTaskEndpointResolver(ecsClient, cfg.ECS, 33001)
+	taskEndPointResolver := aws.NewECSTaskEndpointResolver(ecsClient, cfg.ECS, 33002)
 	taskDrain := client.NewTaskDrainClient(taskEndPointResolver)
 
 	return &Clients{

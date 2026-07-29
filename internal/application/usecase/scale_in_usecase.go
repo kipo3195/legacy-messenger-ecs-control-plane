@@ -6,6 +6,7 @@ import (
 	"legacy-messenger-control-plane/configs"
 	"legacy-messenger-control-plane/internal/domain"
 	"legacy-messenger-control-plane/internal/ports"
+	"log"
 	"time"
 )
 
@@ -87,12 +88,15 @@ func (u *scaleInUsecase) processJob(
 	// 진행중인 작업에 따라 다르게 처리함.
 	switch job.Status {
 	case domain.ScaleInStatusRequested:
+		log.Println("[processJob] 1111")
 		return u.startDrain(ctx, job)
 
 	case domain.ScaleInStatusDraining:
+		log.Println("[processJob] 2222")
 		return u.checkDrain(ctx, job)
 
 	case domain.ScaleInStatusApplied:
+		log.Println("[processJob] 3333")
 		return u.checkCompletion(ctx, job)
 
 	default:
@@ -182,7 +186,18 @@ func (u *scaleInUsecase) startDrain(
 	// 6.메모리에서 현재 drain 대상 task 정보 관리 - 완료 후 protection 해제용
 	u.targetTaskID = targetTask.TaskID
 
-	// 7. 상태 및 작업 정보 저장
+	// 7. 상태 변경을 위해 sessionCount 0으로 초기화 (세션 보고는 하지 않지만, 보고를 하지 않는다고해서 redis의 count가 0이 되는것은 아니므로)
+	// 그리고 drain 요청을 받은 서비스는 request 수신 즉시 report 보고 하지 않아야함.
+	err = u.taskSessionPort.DeleteTaskSessionState(ctx, job.ServiceName, u.targetTaskID)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to request task remove session state. taskID=%s: %w",
+			targetTask.TaskID,
+			err,
+		)
+	}
+
+	// 8. 상태 및 작업 정보 저장
 	return u.coordinator.MarkDraining(
 		job.ServiceName,
 		targetTask.TaskID,
@@ -262,7 +277,6 @@ func (u *scaleInUsecase) checkDrain(
 		return err
 	}
 
-	// 아직 대기
 	if report.SessionCount > 0 {
 		return u.coordinator.ResetZeroSessionStreak(
 			job.ServiceName,
@@ -277,6 +291,7 @@ func (u *scaleInUsecase) checkDrain(
 		return err
 	}
 
+	log.Println("streak 점검 : ", streak)
 	if streak < 3 {
 		return nil
 	}
@@ -291,6 +306,7 @@ func (u *scaleInUsecase) checkDrain(
 	if err != nil {
 		return err
 	}
+	// taskID LastStatus를 STOPPED로 변경 -> checkCompletion에서 상태를 확인함.
 
 	u.scalingPolicy.RecordExecution(
 		job.ServiceName,
@@ -330,7 +346,7 @@ func (u *scaleInUsecase) checkCompletion(
 	}
 
 	// 현재 drain 진행중인 task 정보 조회 - requested 시점에 저장함
-	targetTaskID := u.targetTaskID
+	targetTaskID := job.TargetTaskID
 
 	// 대상 Task STOPPED 확인
 	ecsTask, err := u.ecsPort.DescribeTask(ctx, u.ecsCfg.ClusterName, targetTaskID)
@@ -391,6 +407,8 @@ func (u *scaleInUsecase) checkCompletion(
 
 	// scail in 완료 후 taskID 초기화
 	u.targetTaskID = ""
+
+	log.Println("draining 완료 이후 여기 호출 하나")
 
 	// Scale-in 작업을 종료 상태로 바꾸기 위해 호출
 	return u.coordinator.Complete(job.ServiceName)

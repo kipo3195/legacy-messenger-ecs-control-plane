@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"legacy-messenger-control-plane/internal/ports"
 	"net/http"
@@ -25,6 +27,11 @@ func NewTaskDrainClient(
 		resolver: resolver,
 	}
 }
+
+type TaskDrainRequest struct {
+	TaskID string
+}
+
 func (c *TaskDrainClient) RequestDrain(
 	ctx context.Context,
 	serviceName string,
@@ -46,15 +53,20 @@ func (c *TaskDrainClient) RequestDrain(
 	}
 
 	requestURL := fmt.Sprintf(
-		"http://%s/internal/v1/drain",
+		"http://%s/api/v1/session/provider/drain",
 		endpoint,
 	)
+
+	body, err := json.Marshal(TaskDrainRequest{TaskID: taskID})
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
 		requestURL,
-		nil,
+		bytes.NewReader(body),
 	)
 	if err != nil {
 		return fmt.Errorf(
