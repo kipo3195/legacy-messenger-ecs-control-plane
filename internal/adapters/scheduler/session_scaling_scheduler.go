@@ -53,7 +53,7 @@ func (s *SessionScalingScheduler) execute(ctx context.Context) {
 	result, err := s.usecase.EvaluateAndScale(ctx, s.serviceName)
 	if err != nil {
 		log.Printf(
-			"failed to evaluate session scaling: service=%s error=%v",
+			"f: service=%s error=%v",
 			s.serviceName,
 			err,
 		)

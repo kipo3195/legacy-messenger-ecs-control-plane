@@ -6,6 +6,7 @@ import (
 	"legacy-messenger-control-plane/configs"
 	"legacy-messenger-control-plane/internal/domain"
 	"legacy-messenger-control-plane/internal/ports"
+	"log"
 	"math"
 	"sort"
 	"time"
@@ -187,9 +188,9 @@ func calculateTotalSessionCount(
 	totalCount := 0
 
 	sessionCountPerTask := make([]domain.TaskInfo, 0, len(normalTask))
-
 	// normalTask를 기준으로 totalCount 구하기
 	for _, taskID := range normalTask {
+
 		report, exists := reported[taskID]
 		if !exists {
 			continue
@@ -321,6 +322,7 @@ func (u *sessionAutoScalingUsecase) applyScalingDecision(
 	ecsServiceName string,
 	result domain.SessionAutoScalingResult,
 ) (domain.SessionAutoScalingResult, error) {
+	log.Println("여기는 뭐라고 나오나 result.Action : ", result.Action)
 	switch result.Action {
 
 	case domain.ScalingActionScaleOut:
@@ -349,45 +351,10 @@ func (u *sessionAutoScalingUsecase) applyScalingDecision(
 		)
 
 	case domain.ScalingActionScaleIn:
-		// Scale-in은 Task drain 절차가 필요하므로 여기서 실행하지 않는다.
-		// 20260720 executeScaleIn 대신 별도의 scale in scheduler가 실행할때 상태를 참조 할 수 있는 scaleInCoordinator에 위임한다.
-		// updatedState, err := u.executeScaleIn(
-		// 	ctx,
-		// 	ecsServiceName,
-		// 	result,
-		// )
+
+		// 상태에 따라서 drain 요청과 scale in (실제 ECS에 떠있는 서비스 중단 처리를 구분해서 실행해야되나?)
 
 		return u.requestScaleIn(ecsServiceName, result)
-
-		// (scale in) 가장 적은수의 sessionCount를 갖는 task에 scale in 통보
-		// desiredCount만 변경한다고해서 선정한 Task가 종료된다고 보장되지 않습니다.
-		// ECS Service는 desiredCount를 유지하는 역할을 하며, Scale-in 시 어떤 Task가 종료될지는 ECS 스케줄러가 결정합니다.
-		// 또한 Service Task를 직접 중지해도 desiredCount가 그대로라면 ECS는 대체 Task를 시작됩니다.
-		// 그러므로 Task draining 절차를 통해 안전하게 Scale-in 필요.
-		// current := result.CurrentDesiredCount
-		// recommended := result.RecommendedDesiredCount
-		// for i := 0; i < current-recommended; i++ {
-		// 	taskSession := taskSessionInfo.SessionCountPerTask[i]
-		// }
-
-		// [Task Drain 프로세스]
-		// a. Scale-in 대상 Task 선정
-		// b. 전체 RUNNING Task 보호 (protection=true, Expire을 정상 범주 내로 선정함 Drain이 진행되는 동안 별도의 Scale-in이나 배포가 발생하면 대상 Task 또는 다른 Task가 먼저 종료되는 것을 방지)
-		// c. 대상 Task에 Drain 요청 (신규 요청 차단, 기존 session drain)
-		// d. 대상 Task의 sessionCount == 0 확인 (2~3회 확인), Redis 보고가 만료되지 않아야함, ECS Task 상태가 RUNNING -> 이 조건에 모두 부합했을때
-		// e. 대상 Task의 protection만 해제
-		// f. 나머지 Task가 모두 protected인지 확인
-		// g. desiredCount를 1 감소 (변경 실패시 어떻게 처리할 것인가?)
-		// h. 대상 Task가 STOPPED인지 확인
-		// i. 서비스가 안정 상태인지 확인
-
-		// result.Executed = true
-		// result.ECSState = updatedState
-		// result.Reason = fmt.Sprintf(
-		// 	"scale-in executed successfully: desiredCount=%d -> %d",
-		// 	result.CurrentDesiredCount,
-		// 	result.RecommendedDesiredCount,
-		// )
 
 	case domain.ScalingActionKeep:
 		result.Executed = false

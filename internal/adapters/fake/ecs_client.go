@@ -34,7 +34,7 @@ type ECSClient struct {
 	// Task 하나가 PENDING에서 RUNNING으로 전환되는 시간
 	taskStartDelay time.Duration
 
-	taskRunningNotifier ports.TaskRunningNotifier
+	taskLifecycleNotifier ports.TaskLifecycleNotifier
 
 	protectedTask map[string]struct{}
 }
@@ -43,7 +43,7 @@ var _ ports.ECSPort = (*ECSClient)(nil)
 
 func NewECSClient(
 	initialStates map[string]domain.ECSServiceControlState,
-	taskRunningNotifier ports.TaskRunningNotifier,
+	taskLifecycleNotifier ports.TaskLifecycleNotifier,
 ) *ECSClient {
 	// map 복사
 	states := make(map[string]domain.ECSServiceControlState, len(initialStates))
@@ -53,11 +53,11 @@ func NewECSClient(
 	}
 
 	return &ECSClient{
-		serviceStates:       states,
-		redeployCount:       make(map[string]int),
-		tasks:               make(map[string]domain.TaskStatus),
-		taskStartDelay:      15 * time.Second,
-		taskRunningNotifier: taskRunningNotifier,
+		serviceStates:         states,
+		redeployCount:         make(map[string]int),
+		tasks:                 make(map[string]domain.TaskStatus),
+		taskStartDelay:        15 * time.Second,
+		taskLifecycleNotifier: taskLifecycleNotifier,
 	}
 }
 
@@ -123,9 +123,8 @@ func (c *ECSClient) UpdateServiceDesiredCount(
 	}
 
 	log.Printf("[점검] desiredCount : %d, state.DesiredCount : %d\n", desiredCount, state.DesiredCount)
-	if desiredCount < int(state.DesiredCount) {
-		log.Println("[FAKE - UpdateServiceDesiredCount] Scale out...")
-
+	if desiredCount > int(state.DesiredCount) {
+		log.Println("[UpdateServiceDesiredCount] Scale out")
 		// 현재 전체 task
 		currentTaskCount := int(
 			state.RunningCount + state.PendingCount,
@@ -174,12 +173,10 @@ func (c *ECSClient) UpdateServiceDesiredCount(
 		}
 
 	} else if desiredCount == int(state.DesiredCount) {
-		log.Println("[FAKE - UpdateServiceDesiredCount] Keep...")
+		log.Println("[UpdateServiceDesiredCount] Keep")
 	} else {
-		log.Println("[FAKE - UpdateServiceDesiredCount] Scale in...")
-		// DesiredCount 감소
+		log.Println("[UpdateServiceDesiredCount] Scale in")
 		// protected=false인 RUNNING task를 STOPPED 처리 (startDrain에서 protectedTask 선별)
-		// RunningCount 감소
 
 		if c.protectedTask == nil {
 			return domain.ECSServiceControlState{}, fmt.Errorf("fake ECS protectedTask is not found : %s", serviceName)
@@ -196,12 +193,28 @@ func (c *ECSClient) UpdateServiceDesiredCount(
 				continue
 			}
 
-			log.Println("")
+			log.Println("scale in target Task ID : ", task.TaskID)
+			task.LastStatus = "STOPPED"
+			c.tasks[task.TaskID] = task
 
+			// 실제로 task가 중지되는 처리를 하도록 함 session provider에 stop 호출
+			if c.taskLifecycleNotifier != nil {
+				if err := c.taskLifecycleNotifier.NotifyTaskStopped(ctx, serviceName, task.TaskID); err != nil {
+					return domain.ECSServiceControlState{}, err
+				}
+			}
+
+			// target을 찾았으므로 break
+			break
 		}
 
+		// DesiredCount 감소
+		// RunningCount 감소
 		state.DesiredCount = int32(desiredCount)
 		state.RunningCount = int32(desiredCount)
+
+		c.serviceStates[serviceName] = state
+
 	}
 
 	result := state
@@ -281,7 +294,7 @@ func (c *ECSClient) notifyTaskRunning(
 	serviceName string,
 	task domain.TaskStatus,
 ) {
-	if c.taskRunningNotifier == nil {
+	if c.taskLifecycleNotifier == nil {
 		return
 	}
 
@@ -291,7 +304,7 @@ func (c *ECSClient) notifyTaskRunning(
 	)
 	defer cancel()
 
-	err := c.taskRunningNotifier.NotifyTaskRunning(
+	err := c.taskLifecycleNotifier.NotifyTaskRunning(
 		ctx,
 		domain.TaskRunningEvent{
 			ServiceName: serviceName,
@@ -314,24 +327,52 @@ func (c *ECSClient) ForceNewDeployment(ctx context.Context, clusterName string, 
 }
 
 func (c *ECSClient) GetRunningTaskIDs(ctx context.Context, clusterName string, ecsServiceName string) ([]string, error) {
-	return nil, nil
+
+	if len(c.tasks) == 0 {
+		return nil, fmt.Errorf("fake ECS service task is 0. %s", clusterName)
+	}
+
+	runningTask := make([]string, 0)
+	for _, task := range c.tasks {
+		if task.LastStatus != "RUNNING" {
+			continue
+		}
+
+		runningTask = append(runningTask, task.TaskID)
+	}
+
+	return runningTask, nil
 }
 
 func (c *ECSClient) UpdateTaskProtection(ctx context.Context, clusterName string, protectedTaskIDs []string, flag bool) error {
 
-	temp := make(map[string]struct{}, len(protectedTaskIDs))
-
-	for _, v := range protectedTaskIDs {
-		temp[v] = struct{}{}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
+	temp := make(map[string]struct{}, len(protectedTaskIDs))
+
+	for _, taskID := range protectedTaskIDs {
+		temp[taskID] = struct{}{}
+	}
+
+	c.mu.Lock()
 	c.protectedTask = temp
+	c.mu.Unlock()
 
 	return nil
 }
 
 func (c *ECSClient) DescribeTask(ctx context.Context, clusterName string, taskID string) (domain.ECSTask, error) {
+
+	task, exist := c.tasks[taskID]
+
+	if !exist {
+		return domain.ECSTask{}, fmt.Errorf("task ID is not fake ECS. %s", taskID)
+	}
+
 	return domain.ECSTask{
-		PrivateIP: "127.0.0.1",
+		PrivateIP:  "127.0.0.1",
+		LastStatus: task.LastStatus,
 	}, nil
 }

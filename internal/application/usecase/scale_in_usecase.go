@@ -110,13 +110,15 @@ func (u *scaleInUsecase) startDrain(
 	ctx context.Context,
 	job domain.ScaleInJob,
 ) error {
-	targetTask, err := u.selectScaleInTarget( // 가장 적은 수의 session을 갖는 task를 선출
+	// 가장 적은 수의 session을 갖는 task를 선출
+	targetTask, err := u.selectScaleInTarget(
 		ctx,
 		job.ServiceName,
 	)
 	if err != nil {
 		return err
 	}
+
 	// running task 조회 -> scale in 대상 제외 처리 (proection)
 	runningTaskIDs, err := u.ecsPort.GetRunningTaskIDs(
 		ctx,
@@ -132,7 +134,6 @@ func (u *scaleInUsecase) startDrain(
 
 	// 종료 대상 외 Task를 생존 예정 Task로 선정
 	protectedTaskIDs := make([]string, 0)
-
 	for _, taskID := range runningTaskIDs {
 		if taskID == targetTask.TaskID {
 			continue
@@ -159,7 +160,9 @@ func (u *scaleInUsecase) startDrain(
 		}
 	}
 
-	// 5. 대상 Task에 실제 Drain 요청 (이건 redis에 호출하게 아니지 않나?)
+	// 대상 Task에 실제 Drain 요청
+	// provider에게 "신규 세션 막고, drain 상태로 들어가라" 요청
+	// fake 환경에서는 sessionCount=0 report를 계속 보내게 함
 	if err := u.taskDrainPort.RequestDrain(
 		ctx,
 		job.ServiceName,
@@ -183,21 +186,10 @@ func (u *scaleInUsecase) startDrain(
 		)
 	}
 
-	// 6.메모리에서 현재 drain 대상 task 정보 관리 - 완료 후 protection 해제용
+	// 메모리에서 현재 drain 대상 task 정보 관리 - 완료 후 protection 해제용
 	u.targetTaskID = targetTask.TaskID
 
-	// 7. 상태 변경을 위해 sessionCount 0으로 초기화 (세션 보고는 하지 않지만, 보고를 하지 않는다고해서 redis의 count가 0이 되는것은 아니므로)
-	// 그리고 drain 요청을 받은 서비스는 request 수신 즉시 report 보고 하지 않아야함.
-	err = u.taskSessionPort.DeleteTaskSessionState(ctx, job.ServiceName, u.targetTaskID)
-	if err != nil {
-		return fmt.Errorf(
-			"failed to request task remove session state. taskID=%s: %w",
-			targetTask.TaskID,
-			err,
-		)
-	}
-
-	// 8. 상태 및 작업 정보 저장
+	// 상태 및 작업 정보 저장
 	return u.coordinator.MarkDraining(
 		job.ServiceName,
 		targetTask.TaskID,
@@ -268,7 +260,8 @@ func (u *scaleInUsecase) checkDrain(
 	ctx context.Context,
 	job domain.ScaleInJob,
 ) error {
-	report, err := u.taskSessionPort.GetTaskSessionReportByTask( // drain 중에 현재 task에 연결된 session의 수 점검, 단 TargetTaskID는 Requested시점의 최소 session task임
+	// drain 중에 현재 task에 연결된 session의 수 점검, 단 TargetTaskID는 Requested시점의 최소 session task임
+	report, err := u.taskSessionPort.GetTaskSessionReportByTask(
 		ctx,
 		job.ServiceName,
 		job.TargetTaskID,
@@ -277,6 +270,7 @@ func (u *scaleInUsecase) checkDrain(
 		return err
 	}
 
+	// fake의 경우 startDrain 에서 이미 session provider에게 session Count를 0으로 보고하게 함
 	if report.SessionCount > 0 {
 		return u.coordinator.ResetZeroSessionStreak(
 			job.ServiceName,
@@ -291,12 +285,14 @@ func (u *scaleInUsecase) checkDrain(
 		return err
 	}
 
-	log.Println("streak 점검 : ", streak)
 	if streak < 3 {
 		return nil
 	}
 
 	// 0이 연속 3회, desiredCount 감소, 상태 APPLIED
+	// session count가 안정적으로 접어들었다로 판단가능하므로,
+	// UpdateServiceDesiredCount 내부에서 ECS가 동작하는 것 처럼 desiredCount 변경시 protected를 제외한 task kill
+	// 처리를 위해 fake에서는 session provider에 해당 task 중지 요청
 	_, err = u.ecsPort.UpdateServiceDesiredCount(
 		ctx,
 		u.ecsCfg.ClusterName,
@@ -306,8 +302,8 @@ func (u *scaleInUsecase) checkDrain(
 	if err != nil {
 		return err
 	}
-	// taskID LastStatus를 STOPPED로 변경 -> checkCompletion에서 상태를 확인함.
 
+	// taskID LastStatus를 STOPPED로 변경 -> checkCompletion에서 상태를 확인함.
 	u.scalingPolicy.RecordExecution(
 		job.ServiceName,
 		string(domain.ScalingActionScaleIn),
@@ -359,7 +355,17 @@ func (u *scaleInUsecase) checkCompletion(
 
 	if ecsTask.LastStatus != "STOPPED" {
 		return fmt.Errorf(
-			"%s status is invalid ... status : %w",
+			"%s status is invalid ... status : %s",
+			targetTaskID,
+			ecsTask.LastStatus,
+		)
+	}
+
+	// Redis report/expires 제거 (checkDrain에서 session provider STOP 호출)
+	err = u.taskSessionPort.DeleteTaskSessionState(ctx, job.ServiceName, job.TargetTaskID)
+	if err != nil {
+		return fmt.Errorf(
+			"%s session report data remove fail! : %w",
 			targetTaskID,
 			err,
 		)
@@ -407,8 +413,6 @@ func (u *scaleInUsecase) checkCompletion(
 
 	// scail in 완료 후 taskID 초기화
 	u.targetTaskID = ""
-
-	log.Println("draining 완료 이후 여기 호출 하나")
 
 	// Scale-in 작업을 종료 상태로 바꾸기 위해 호출
 	return u.coordinator.Complete(job.ServiceName)
