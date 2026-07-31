@@ -6,7 +6,6 @@ import (
 	"legacy-messenger-control-plane/configs"
 	"legacy-messenger-control-plane/internal/domain"
 	"legacy-messenger-control-plane/internal/ports"
-	"log"
 	"time"
 )
 
@@ -88,15 +87,12 @@ func (u *scaleInUsecase) processJob(
 	// 진행중인 작업에 따라 다르게 처리함.
 	switch job.Status {
 	case domain.ScaleInStatusRequested:
-		log.Println("[processJob] 1111")
 		return u.startDrain(ctx, job)
 
 	case domain.ScaleInStatusDraining:
-		log.Println("[processJob] 2222")
 		return u.checkDrain(ctx, job)
 
 	case domain.ScaleInStatusApplied:
-		log.Println("[processJob] 3333")
 		return u.checkCompletion(ctx, job)
 
 	default:

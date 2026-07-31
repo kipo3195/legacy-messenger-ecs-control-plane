@@ -122,7 +122,7 @@ func (c *ECSClient) UpdateServiceDesiredCount(
 			fmt.Errorf("fake ECS service not found: %s", serviceName)
 	}
 
-	log.Printf("[점검] desiredCount : %d, state.DesiredCount : %d\n", desiredCount, state.DesiredCount)
+	log.Printf("[UpdateServiceDesiredCount] desiredCount : %d, state.DesiredCount : %d\n", desiredCount, state.DesiredCount)
 	if desiredCount > int(state.DesiredCount) {
 		log.Println("[UpdateServiceDesiredCount] Scale out")
 		// 현재 전체 task

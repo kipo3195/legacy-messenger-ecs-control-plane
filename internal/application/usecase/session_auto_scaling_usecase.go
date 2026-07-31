@@ -322,7 +322,7 @@ func (u *sessionAutoScalingUsecase) applyScalingDecision(
 	ecsServiceName string,
 	result domain.SessionAutoScalingResult,
 ) (domain.SessionAutoScalingResult, error) {
-	log.Println("여기는 뭐라고 나오나 result.Action : ", result.Action)
+	log.Println("[applyScalingDecision] result.Action :", result.Action)
 	switch result.Action {
 
 	case domain.ScalingActionScaleOut:
