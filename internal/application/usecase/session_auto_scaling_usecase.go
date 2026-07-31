@@ -171,6 +171,15 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 	// 11. 3.에서 구한 stop candidate redis 점검 후 삭제 (추후 ECS에서 task 정보도 조회 하면 좋을 듯)
 	u.stopExpiredTasks(ctx, serviceName, stopCandidates)
 
+	sessionReportMap := make(map[string]int, len(normalTask))
+	// 12. 정상적인 session report 데이터를 로깅
+	for _, v := range normalTask {
+		sessionCount := reported[v].SessionCount
+		sessionReportMap[v] = sessionCount
+	}
+
+	result.SessionReport = sessionReportMap
+
 	ecsState, err = u.ecsPort.GetServiceControlState(
 		ctx,
 		u.ecsCfg.ClusterName,

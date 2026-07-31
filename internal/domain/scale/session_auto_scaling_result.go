@@ -16,5 +16,7 @@ type SessionAutoScalingResult struct {
 	Executed bool                            `json:"executed"`
 	Reason   string                          `json:"reason"`
 
+	SessionReport map[string]int `json:"sessionReport"`
+
 	ECSState interface{} `json:"ecsState,omitempty"`
 }

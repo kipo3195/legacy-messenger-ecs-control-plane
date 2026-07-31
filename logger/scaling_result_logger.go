@@ -40,6 +40,7 @@ type ScalingMonitoringResult struct {
 	RecommendedDesiredCount int
 	Action                  any
 	Reason                  string
+	SessionReport           map[string]int
 }
 
 func (l *ScalingResultLogger) Write(
@@ -83,17 +84,16 @@ func (l *ScalingResultLogger) Write(
 	defer file.Close()
 
 	content := fmt.Sprintf(
-		`########################## Scaling Monitoring Result ##########################
-RecordedAt               : %s
-ServiceName              : %s
-TotalSessionCount        : %d
-RunningTaskCount         : %d
-CurrentDesiredCount      : %d
-RecommendedDesiredCount  : %d
-Action                   : %v
-Reason                   : %s
-##############################################################################
-
+		`################################## Scaling Monitoring Result ##################################
+[Scaling Evaluation]
+  RecordedAt               : %s
+  ServiceName              : %s
+  TotalSessionCount        : %d
+  RunningTaskCount         : %d
+  CurrentDesiredCount      : %d
+  RecommendedDesiredCount  : %d
+  Action                   : %v
+  Reason                   : %s
 `,
 		now.Format("2006-01-02 15:04:05.000 MST"),
 		result.ServiceName,
@@ -105,6 +105,36 @@ Reason                   : %s
 		result.Reason,
 	)
 
+	if _, err := file.WriteString(content); err != nil {
+		return fmt.Errorf(
+			"failed to write scaling monitoring result: path=%s: %w",
+			filePath,
+			err,
+		)
+	}
+
+	for k, v := range result.SessionReport {
+		content := fmt.Sprintf(
+			`
+[Scaling Evaluation]
+  TaskID               	 : %s
+  SessionCount             : %d
+`,
+			k,
+			v,
+		)
+
+		if _, err := file.WriteString(content); err != nil {
+			return fmt.Errorf(
+				"failed to write scaling monitoring result: path=%s: %w",
+				filePath,
+				err,
+			)
+		}
+	}
+
+	content = fmt.Sprintln(`###############################################################################################
+	`)
 	if _, err := file.WriteString(content); err != nil {
 		return fmt.Errorf(
 			"failed to write scaling monitoring result: path=%s: %w",
