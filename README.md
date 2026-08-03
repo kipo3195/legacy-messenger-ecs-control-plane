@@ -4,7 +4,7 @@
 AWS ECS 환경에서 운영하기 위한 Go 기반 Control Plane POC입니다.
 
 AWS ECS·ELB·CloudWatch에 분산된 운영 기능을 REST API로 통합하고,
-각 WebSocket Task가 보고하는 실제 세션 수를 Redis에 집계하여
+각 WebSocket Task의 실제 세션 수를 직접 보고받아 Redis에 집계하는 구조를 구현하고,
 Scale-out과 Drain 기반 Scale-in을 자동으로 판단하고 실행하는 구조를 구현했습니다.
 
 프로젝트는 다음 3단계로 검증합니다.
@@ -13,7 +13,7 @@ Scale-out과 Drain 기반 Scale-in을 자동으로 판단하고 실행하는 구
    실제 AWS ECS 환경에서 Service·Task 상태 조회, Target Health 조회,
    `desiredCount` 변경 및 강제 재배포 기능을 검증합니다.
 
-2. **Mock 기반 자동 스케일링 검증**
+2. **Fake ECS 기반 자동 스케일링 통합 검증**
    Fake ECS와 Session Report Provider를 활용하여 세션 보고, Redis 집계,
    Task의 `PENDING → RUNNING` 상태 전이, 자동 Scale-out 및
    Drain 기반 Scale-in의 전체 흐름을 검증합니다.
@@ -22,7 +22,7 @@ Scale-out과 Drain 기반 Scale-in을 자동으로 판단하고 실행하는 구
    세션 기반 스케일링 판단 결과를 실제 ECS Service에 반영하고,
    신규 Task 투입과 Drain 대상 Task 종료까지의 전체 동작을 검증합니다.
 
-현재 (2026.07.31) 기준 1단계와 2단계 검증을 완료했으며,
+현재 기준 1단계와 2단계 검증을 완료했으며,
 마지막 단계로 실제 AWS 환경에서 Control Plane과 ECS Service 간
 세션 기반 자동 Scale-out 및 Drain 기반 Scale-in을 검증할 예정입니다.
 
@@ -31,14 +31,13 @@ Scale-out과 Drain 기반 Scale-in을 자동으로 판단하고 실행하는 구
 1. [프로젝트 개요](#1-프로젝트-개요)
 2. [프로젝트 배경 및 문제 정의](#2-프로젝트-배경-및-문제-정의)
 3. [프로젝트 목표](#3-프로젝트-목표)
-4. [프로젝트 발전 및 검증 단계](#4-프로젝트-발전-및-검증-단계)
-5. [주요 기능](#5-주요-기능)
-6. [시스템 아키텍처](#6-시스템-아키텍처)
-7. [핵심 설계와 기술적 의사결정](#7-핵심-설계와-기술적-의사결정)
-8. [API 및 Redis 데이터 구조](#8-api-및-redis-데이터-구조)
-9. [실행 및 배포 방법](#9-실행-및-배포-방법)
-10. [검증 시나리오 및 결과](#10-검증-시나리오-및-결과)
-11. [현재 한계 및 실제 AWS 후속 검증](#11-현재-한계-및-실제-aws-후속-검증)
+4. [주요 기능](#4-주요-기능)
+5. [시스템 아키텍처](#5-시스템-아키텍처)
+6. [핵심 설계와 기술적 의사결정](#6-핵심-설계와-기술적-의사결정)
+7. [API 명세](#7-api-명세)
+8. [실행 및 배포 방법](#8-실행-및-배포-방법)
+9. [검증 시나리오 및 결과](#9-검증-시나리오-및-결과)
+10. [현재 한계 및 실제 AWS 후속 검증](#10-현재-한계-및-실제-aws-후속-검증)
 
 ## 1. 프로젝트 개요
 
@@ -89,11 +88,11 @@ AWS ECS 환경에서 운영하기 위해 필요한 **관측·제어·세션 기�
 * Scale-out 시 `desiredCount` 증가와 신규 Task의 `PENDING → RUNNING` 전이
 * 신규 Running Task의 Session Report Provider 등록 및 세션 보고 시작
 * Scale-in 대상 Task 선정과 중복 선택 방지를 위한 보호 처리
-* Drain 요청과 세션 감소 확인
+* Drain 요청 이후 Session Provider의 세션 수 감소를 이용한 Drain 완료 조건 검증
 * Drain 완료 후 `desiredCount` 감소 및 Task 종료
 
 Fake ECS는 정해진 응답만 반환하는 단순 Mock이 아니라,
-`desiredCount`, `runningCount`, `pendingCount`와 개별 Task 상태를 보유하고 실제 ECS와 유사한 상태 전이를 재현하는 테스트 Adapter로 구현했습니다.
+`desiredCount`, `runningCount`, `pendingCount`와 개별 Task 상태를 보유하고 실제 ECS와 유사한 상태 전이를 재현하는 Fake ECS로 구현했습니다.
 
 ### 3단계. 실제 AWS 자동 스케일링 통합 검증 — 예정
 
@@ -287,344 +286,299 @@ Fake ECS는 다음 상태를 내부적으로 관리합니다.
 
 ## 3. 프로젝트 목표
 
-본 프로젝트의 목표는 레거시 메신저의 ECS 운영 기능을 Control Plane으로 통합하고, WebSocket 연결 부하를 기반으로 서비스 확장 여부를 판단할 수 있는 구조를 구현하는 것입니다.
+본 프로젝트의 목표는 레거시 메신저의 ECS 운영 기능을 Control Plane으로 통합하고, 각 WebSocket Task가 보고하는 실제 세션 수를 기반으로 서비스 확장과 축소를 자동으로 판단·실행할 수 있는 구조를 구현하는 것입니다.
 
 주요 목표는 다음과 같습니다.
 
-* ECS Service, Task, Target Health 및 연결 부하를 하나의 REST API 계층에서 조회
+* ECS Service, Task, Target Health 및 운영 상태를 하나의 REST API 계층에서 조회
 * 서비스별 최소·최대 Task 수와 확장 가능 여부를 기준으로 안전하게 `desiredCount` 변경
-* 강제 재배포와 스케일링 판단 기능을 표준화된 운영 API로 제공
-* 연결 수와 실행 중인 Task 수를 이용하여 Scale-out, Scale-in 또는 유지 여부 계산
-* 현재 부하에 적합한 권장 `desiredCount` 반환
+* WebSocket Task별 세션 수를 Redis에 저장·집계하여 실제 세션 부하 계산
+* 세션 수와 ECS Service 상태를 기반으로 Scale-out, Scale-in 또는 유지 여부 판단
+* Cooldown, 연속 조건 및 Pending 상태를 반영하여 중복 스케일링 방지
+* Scale-out은 자동 실행하고, Scale-in은 대상 Task의 Drain 완료 후 실행
 
-현재 단계에서는 CloudWatch의 `ActiveConnectionCount`를 이용한 연결 기반 스케일링 판단 로직과 수동 ECS 제어 기능까지 구현했습니다.
+현재 실제 AWS ECS API를 이용한 운영 기능 검증과 Fake ECS·Session Provider 기반 자동 스케일링 검증을 완료했습니다.
+
+다음 단계에서는 실제 AWS ECS 환경에서 세션 기반 자동 Scale-out과 Drain 기반 Scale-in의 통합 동작을 검증할 예정입니다.
+
 
 ## 4. 주요 기능
 
-### 4.1 ECS 서비스 관측
+### 4.1 ECS 운영 기능 통합
 
-Control Plane이 관리하는 ECS Service의 현재 운영 상태를 조회합니다.
+AWS ECS·ELB·CloudWatch에 분산된 운영 기능을 하나의 REST API 계층으로 통합했습니다.
 
-* 관리 대상 서비스 목록 조회
-* ECS Service의 `desiredCount`, `runningCount`, `pendingCount` 확인
-* Deployment 상태와 현재 Task Definition 확인
-* 실행 중인 Task별 상태, Health 상태 및 배치 정보 조회
-* Load Balancer Target Group의 Target Health 상태 조회
+* ECS Service와 Task 상태 조회
+* `desiredCount`, `runningCount`, `pendingCount` 확인
+* Target Group과 Target Health 조회
+* `desiredCount` 변경 및 `forceNewDeployment` 실행
+* 서비스별 최소·최대 Task 수 검증
 
-ECS와 Elastic Load Balancing에 분산된 정보를 서비스 단위로 조합하여 제공합니다.
+### 4.2 Task별 실제 세션 수집 및 Redis 집계
 
-### 4.2 WebSocket 연결 부하 조회
+각 WebSocket Task가 자신이 관리하는 실제 세션 수를 주기적으로 보고하고, Control Plane은 Redis에 Task별 최신 상태를 저장합니다.
 
-WebSocket 서비스의 전체 연결 수와 실행 중인 Task 수를 기준으로 현재 연결 부하를 계산합니다.
+* Task별 세션 수와 보고 시각 저장
+* 보고 만료 시각 관리
+* 보고가 중단된 Task를 전체 집계에서 제외
+* 서비스 전체 유효 세션 수와 Task별 세션 분포 계산
 
-* ALB의 `ActiveConnectionCount` 조회
-* 현재 실행 중인 ECS Task 수 조회
-* Task당 평균 연결 수 계산
-* 서비스별 목표 연결 수와 현재 연결 부하 비교
-* 현재 연결 압력을 `LOW`, `NORMAL`, `HIGH` 상태로 표현
+CloudWatch의 `ActiveConnectionCount`는 운영 관측에 활용하고, 자동 스케일링 판단에는 Task가 직접 보고한 실제 세션 수를 사용합니다.
 
-현재 POC에서는 CloudWatch 연결 지표를 사용하며, 실제 세션 기반 판단은 후속 확장 범위에 포함됩니다.
+### 4.3 세션 기반 자동 Scale-out
 
-### 4.3 ECS 서비스 제어
+서비스 전체 세션 수와 현재 ECS 상태를 기반으로 필요한 Task 수를 계산하고, 정책 조건을 만족하면 `desiredCount`를 자동으로 증가시킵니다.
 
-운영자가 ECS Service의 실행 수를 변경하거나 현재 Task를 재배포할 수 있는 기능을 제공합니다.
+* 최소·최대 Task 수와 Scale Step 적용
+* 연속 조건과 Cooldown 적용
+* `pendingCount`가 존재할 때 중복 Scale-out 차단
+* 신규 Task의 `PENDING → RUNNING` 상태 전이 확인
+* 신규 Running Task의 세션 보고 흐름 연결
 
-* `desiredCount` 변경을 통한 서비스 기동 및 종료
-* 실행 Task 수를 증가시키는 Scale-out
-* 실행 Task 수를 감소시키는 Scale-in
-* `forceNewDeployment`를 이용한 Task 순차 재배포
-* 서비스별 확장 가능 여부 확인
-* 최소·최대 Task 수 범위를 벗어나는 요청 검증
+### 4.4 Drain 기반 Scale-in
 
-서비스 제어 요청에는 Service Registry에 정의된 운영 정책을 적용하여 잘못된 Task 수 변경을 방지합니다.
+Scale-in은 기존 WebSocket 연결에 영향을 줄 수 있으므로, Task 수를 즉시 감소시키지 않고 대상 Task의 세션을 정리한 후 실행합니다.
 
-### 4.4 연결 부하 기반 스케일링 판단
+* 세션 수가 가장 적은 Task를 Scale-in 대상으로 선정
+* 처리 중인 Task의 중복 선택을 방지하기 위한 보호
+* 대상 Task에 Drain 요청
+* 세션 감소 및 Drain 완료 확인
+* 완료 후 `desiredCount` 감소
 
-현재 연결 부하와 서비스별 운영 정책을 결합하여 ECS Service의 확장 필요 여부를 계산합니다.
+Scale-out은 즉시 실행하고, Scale-in은 별도의 Job과 Coordinator를 통해 단계적으로 처리하도록 분리했습니다.
 
-* 전체 활성 연결 수와 Task당 평균 연결 수 계산
-* 목표 연결 수를 기준으로 현재 부하 상태 평가
-* `SCALE_OUT`, `SCALE_IN`, `KEEP`, `NOT_SCALABLE` 판단
-* 현재 부하에 적합한 권장 `desiredCount` 계산
-* 최소·최대 Task 수 범위를 적용한 권장값 보정
-* 판단 결과와 판단 사유 제공
+### 4.5 실제 AWS와 Fake ECS를 이용한 단계별 검증
 
-현재 기능은 스케일링 권장 결과를 반환하며, 판단 결과에 따라 `desiredCount`를 자동으로 변경하지는 않습니다.
+Application Usecase가 AWS SDK에 직접 의존하지 않도록 `ECSPort`를 정의하고, 실제 AWS Adapter와 Fake ECS Adapter를 동일한 인터페이스로 구성했습니다.
 
-### 4.5 서비스별 운영 정책 관리
+* 실제 AWS에서 ECS 상태 조회, 수동 Scale 및 재배포 검증
+* Fake ECS에서 `PENDING`, `RUNNING`, `STOPPED` 상태 전이 재현
+* Session Provider를 이용한 Task별 세션 보고 재현
+* 세션 보고부터 자동 Scale-out과 Drain 기반 Scale-in까지 로컬 통합 검증
 
-Control Plane이 관리할 ECS 서비스와 서비스별 운영 정책을 Service Registry에 정의합니다.
+현재 실제 AWS 운영 API 검증과 Fake ECS 기반 자동 스케일링 검증을 완료했으며, 실제 AWS 환경의 자동 Scale-in/out 통합 검증을 남겨두고 있습니다.
 
-주요 설정 항목은 다음과 같습니다.
-
-* Control Plane에서 사용하는 논리 서비스명
-* 실제 AWS ECS Service 이름
-* 서비스 확장 가능 여부
-* 최소 및 최대 Task 수
-* Load Balancer 유형
-* Task당 목표 연결 수
-
-Service Registry를 통해 AWS 리소스 정보와 운영 정책을 애플리케이션 코드에서 분리하고, 각 서비스에 동일한 관측·제어·판단 흐름을 적용할 수 있도록 구성했습니다.
 
 ## 5. 시스템 아키텍처
 
-`legacy-messenger-control-plane`은 실제 사용자 메시지와 WebSocket 연결을 처리하는 Data Plane과 분리되어, ECS 서비스의 상태를 관측하고 실행 상태를 제어하는 Control Plane으로 동작합니다.
+`legacy-messenger-control-plane`은 실제 사용자 메시지와 WebSocket 연결을 처리하는 Data Plane과 분리되어, ECS Service의 상태를 관측하고 세션 부하를 기반으로 실행 상태를 제어하는 Control Plane으로 동작합니다.
 
-운영자 또는 관리자 시스템은 Control Plane의 REST API를 호출하여 서비스 상태를 조회하고, Task 수를 변경하거나 재배포를 수행합니다. Control Plane은 AWS ECS, Elastic Load Balancing, CloudWatch API에서 필요한 정보를 조회한 뒤 Service Registry에 정의된 운영 정책과 결합하여 처리합니다.
+WebSocket Task는 자신이 관리 중인 실제 세션 수를 Control Plane에 주기적으로 보고합니다. Control Plane은 Redis에 저장된 Task별 최신 세션 상태를 집계하고, Scaling Policy를 적용하여 자동 Scale-out 또는 Drain 기반 Scale-in을 실행합니다.
 
 ![Legacy Messenger Control Plane Architecture](./docs/images/control-plane-architecture.png)
 
-### 5.1 현재 구현 구조
+### 5.1 전체 구성
 
-현재 Control Plane은 다음 구성요소와 연동합니다.
+| 구성요소                 | 역할                                       |
+| -------------------- | ---------------------------------------- |
+| WebSocket Task       | 사용자 연결 처리 및 Task별 세션 수 보고                |
+| Redis                | Task별 최신 세션 수와 보고 만료 상태 저장               |
+| Scaling Scheduler    | 세션 집계 및 스케일링 평가 실행                       |
+| Scaling Policy       | 최소·최대 Task 수, Cooldown 및 연속 조건 적용        |
+| Scale-in Coordinator | 대상 Task 선정, 보호, Drain 및 Scale-in 처리      |
+| Amazon ECS           | Service·Task 조회, `desiredCount` 변경 및 재배포 |
+| ELB·CloudWatch       | Target Health와 연결 부하 관측                  |
+| Service Registry     | AWS 리소스 매핑과 서비스별 운영 정책 관리                |
 
-| 구성요소                   | 역할                                             |
-| ---------------------- | ---------------------------------------------- |
-| Amazon ECS             | Service와 Task 상태 조회, `desiredCount` 변경, 강제 재배포 |
-| Elastic Load Balancing | Target Group과 Target Health 상태 조회              |
-| Amazon CloudWatch      | ALB의 `ActiveConnectionCount` 조회                |
-| Service Registry       | 관리 대상 서비스와 최소·최대 Task 수, 확장 가능 여부, 목표 연결 수 관리  |
-
-현재 연결 부하 기반 스케일링 판단 흐름은 다음과 같습니다.
-
-```text
-CloudWatch ActiveConnectionCount
-                │
-                ▼
-          Control Plane
-                │
-                ├── Running Task Count
-                ├── Target Connections per Task
-                ├── Min / Max Task Count
-                └── Scalable Policy
-                │
-                ▼
-        Scaling Evaluation
-                │
-        ┌───────┼────────┐
-        ▼       ▼        ▼
-   SCALE_OUT  MAINTAIN  SCALE_IN
-```
-
-Control Plane은 CloudWatch에서 조회한 전체 활성 연결 수를 현재 실행 중인 Task 수로 나누어 Task당 평균 연결 수를 계산합니다.
-
-계산된 연결 부하와 Service Registry에 정의된 목표 연결 수 및 최소·최대 Task 수를 비교하여 스케일링 판단 결과와 권장 `desiredCount`를 반환합니다.
-
-### 5.2 Control Plane의 역할과 제어 범위
-
-사용자의 WebSocket 연결은 ALB를 통해 WebSocket ECS Task로 전달되며, Control Plane은 실제 사용자 연결이나 메시지 요청을 직접 처리하지 않습니다.
+전체 동작 흐름은 다음과 같습니다.
 
 ```text
-Messenger Client
+Messenger Clients
         │
         ▼
        ALB
         │
         ▼
 WebSocket ECS Tasks
+        │
+        │ Session Report
+        ▼
+   Control Plane
+        │
+        ├── Redis Session State
+        │
+        ├── Scaling Scheduler
+        │
+        └── Scaling Policy
+        │
+   ┌────┴──────────┐
+   ▼               ▼
+Scale-out     Scale-in Coordinator
+   │               │
+   │          Select → Protect
+   │               │
+   │             Drain
+   │               │
+   └───────┬───────┘
+           ▼
+         ECSPort
+           │
+           ▼
+      Amazon ECS
 ```
 
-Control Plane은 운영자 또는 관리자 시스템의 요청을 받아 AWS API를 통해 ECS Service와 Task 상태를 조회하고, Task 수 변경과 재배포 등의 운영 작업을 수행합니다.
+### 5.2 Data Plane과 Control Plane 분리
 
-```text
-Operator / Admin System
-           │
-           ▼
-      Control Plane
-           │
-           ▼
-        AWS API
-           │
-           ▼
-   ECS / ELB / CloudWatch
-```
+사용자의 WebSocket 연결과 메시지 요청은 Data Plane에 해당하는 WebSocket Task가 처리하며, Control Plane은 사용자 트래픽 경로에 직접 참여하지 않습니다.
+
+Control Plane은 다음 운영 책임을 담당합니다.
+
+* ECS Service와 Task 상태 관측
+* Task별 세션 상태 수집 및 집계
+* 스케일링 정책 평가
+* 자동 Scale-out
+* Drain 기반 Scale-in
+* 운영자 요청에 따른 수동 제어 및 재배포
 
 이를 통해 사용자 트래픽 처리와 운영 제어의 책임을 분리했습니다.
 
-### 5.3 목표 세션 직접 보고 구조
+### 5.3 세션 기반 자동 스케일링
 
-향후에는 각 WebSocket Task가 자신이 관리 중인 실제 로그인 세션 수를 Control Plane에 직접 보고하도록 확장할 예정입니다.
+각 WebSocket Task가 보고한 세션 수는 Redis에 최신 상태로 저장되며, 보고가 유효한 Task의 세션 수만 서비스 전체 부하에 포함됩니다.
 
 ```text
-WebSocket Task 1 ─┐
-WebSocket Task 2 ─┼── REST Session Report ──▶ Control Plane
-WebSocket Task 3 ─┘                              │
-                                                ▼
-                                              Redis
-                                                │
-                                                ▼
-                                      Short-cycle Evaluation
-                                                │
-                                                ▼
-                                        Amazon ECS API
-                                                │
-                                                ▼
-                                      Scale-out / Scale-in
+Task별 Session Report
+        │
+        ▼
+Redis 최신 상태 저장
+        │
+        ▼
+유효 세션 집계
+        │
+        ▼
+Scaling Policy
+        │
+   ┌────┴─────┐
+   ▼          ▼
+Scale-out   Scale-in Job
 ```
 
-각 WebSocket Task는 서비스명, Task 식별자, 현재 세션 수, 보고 시각을 전달하고, Control Plane은 Redis에 저장된 Task별 최신 세션 정보를 집계하여 스케일링 판단에 사용합니다.
+Scale-out은 정책 조건을 만족하면 `desiredCount`를 증가시키고, Scale-in은 세션이 가장 적은 Task를 선정하여 Drain 완료 후 `desiredCount`를 감소시킵니다.
+
+### 5.4 AWS Adapter와 Fake ECS Adapter
+
+Application Usecase가 AWS SDK에 직접 의존하지 않도록 ECS 연동 기능을 `ECSPort`로 추상화했습니다.
+
+```text
+Application Usecase
+        │
+        ▼
+      ECSPort
+      ├── AWS ECS Adapter
+      └── Fake ECS Adapter
+```
+
+AWS ECS Adapter는 실제 AWS 리소스를 조회·제어하고, Fake ECS Adapter는 Service와 Task 상태를 내부적으로 관리하며 `PENDING → RUNNING → STOPPED` 상태 전이를 재현합니다.
+
+이를 통해 핵심 스케일링 로직을 변경하지 않고 실제 AWS 환경과 로컬 통합 검증 환경을 교체할 수 있도록 구성했습니다.
+
 
 ## 6. 핵심 설계와 기술적 의사결정
 
-### 6.1 기존 서비스 제어 방식에서 Control Plane으로 확장
+### 6.1 독립 Control Plane 애플리케이션 구성
 
-기존 레거시 메신저 운영 환경에는 운영자의 요청에 따라 지정된 Shell Script를 실행하는 Switch Service가 존재했습니다.
+기존 레거시 메신저 운영 환경에서는 Switch Service가 Shell Script를 실행하여 서버의 서비스를 기동하거나 종료했습니다.
 
-기존 Switch Service는 서버에 배포된 메신저 서비스를 기동하거나 종료하는 역할을 담당했으며, 서비스 상태 조회, 실행 인스턴스 확인, Health 상태 점검 또는 부하 기반 확장 판단 기능은 포함하지 않았습니다.
-
-레거시 메신저를 AWS ECS 환경으로 전환한 이후에는 단순한 서비스 기동·종료 외에도 다음 운영 기능이 필요해졌습니다.
+ECS 전환 이후에는 단순 기동·종료뿐 아니라 다음 기능이 함께 필요해졌습니다.
 
 * ECS Service와 Task 상태 조회
-* Load Balancer Target Health 조회
-* `desiredCount` 변경을 통한 Scale-out 및 Scale-in
-* `forceNewDeployment`를 이용한 Task 재배포
-* 서비스별 최소·최대 Task 수 검증
-* 연결 부하를 기반으로 한 스케일링 필요 여부 판단
+* Target Health 확인
+* `desiredCount` 변경 및 재배포
+* 서비스별 운영 정책 적용
+* 세션 부하 기반 스케일링 판단
+* 주기적인 세션 집계와 자동 실행
 
-기존 Switch Service가 AWS CLI 기반 Script를 실행하도록 확장하는 방식도 가능했습니다. 그러나 이 방식은 AWS 리소스 조회, 오류 처리 및 운영 정책이 개별 Script에 분산될 가능성이 있고, 조회 결과와 스케일링 판단 로직을 하나의 흐름으로 연결하기 어렵다고 판단했습니다.
+기존 Switch Service나 개별 Shell Script를 확장하는 방식도 가능했지만, 이 경우 AWS 리소스 조회, 오류 처리 및 운영 정책이 여러 Script에 분산될 수 있습니다.
 
-AWS Lambda를 이용하여 `desiredCount` 변경이나 강제 재배포를 수행하는 방식도 대안이 될 수 있습니다. 호출 빈도가 낮고 요청 단위로 종료되는 단순 운영 작업은 Lambda로 충분히 구현할 수 있습니다.
+또한 본 프로젝트는 단발성 명령 실행뿐 아니라 Task별 세션 보고를 수집하고 짧은 주기로 스케일링을 평가해야 하므로, 지속적으로 실행되는 독립 Go 애플리케이션 형태의 Control Plane으로 구성했습니다.
 
-다만 본 프로젝트는 여러 AWS 리소스의 상태를 조합하고 서비스별 정책을 적용하여 스케일링 판단까지 수행하며, 향후 WebSocket Task의 실제 세션 수를 수신하고 짧은 주기로 확장 여부를 평가하는 구조까지 고려합니다.
+### 6.2 Usecase와 외부 인프라의 분리
 
-따라서 단발성 명령 실행보다 지속적으로 확장 가능한 독립 Go 애플리케이션 형태의 Control Plane을 선택했습니다.
-
-### 6.2 Service Registry 기반 서비스 및 운영 정책 관리
-
-Control Plane이 관리할 서비스와 서비스별 운영 정책은 코드에 직접 작성하지 않고 Service Registry로 분리했습니다.
-
-Service Registry에는 다음 정보를 정의합니다.
-
-* Control Plane에서 사용하는 논리 서비스명
-* 실제 AWS ECS Service 이름
-* 서비스 확장 가능 여부
-* 최소 및 최대 Task 수
-* Load Balancer 유형
-* Task당 목표 연결 수
-
-외부 API에서는 `ws`, `ds`, `ns`와 같은 논리 서비스명을 사용하고, 실제 AWS 리소스 이름과의 매핑은 Service Registry가 담당합니다.
-
-또한 스케일 요청을 처리할 때 요청받은 값을 그대로 AWS ECS에 전달하지 않고, 대상 서비스가 확장 가능한지와 요청한 Task 수가 최소·최대 범위 안에 있는지를 검증합니다.
-
-이를 통해 새로운 관리 대상을 추가하거나 서비스별 운영 정책을 변경할 때 핵심 업무 로직의 수정을 최소화하도록 구성했습니다.
-
-### 6.3 Use Case와 AWS Adapter의 책임 분리
-
-Control Plane은 HTTP 처리, 운영 규칙, 외부 AWS 연동의 책임을 분리하여 구성했습니다.
+Application Usecase가 AWS SDK나 Redis 구현에 직접 의존하지 않도록 외부 기능을 Port Interface로 분리했습니다.
 
 ```text
 HTTP Handler
       │
       ▼
-Application Use Case
+Application Usecase
       │
       ▼
 Port Interface
       │
-      ▼
-AWS SDK Adapter
+      ├── AWS ECS Adapter
+      ├── Fake ECS Adapter
+      └── Redis Adapter
 ```
 
-각 계층의 역할은 다음과 같습니다.
+각 계층의 책임은 다음과 같습니다.
 
-| 계층                   | 역할                                       |
-| -------------------- | ---------------------------------------- |
-| HTTP Handler         | 요청 파라미터 검증, 요청 객체 변환, HTTP 응답 생성         |
-| Application Use Case | 서비스 조회, 스케일 조정, 연결 부하 계산 등 업무 흐름 처리      |
-| Port Interface       | Application 계층에서 필요한 외부 기능을 인터페이스로 정의    |
-| AWS Adapter          | AWS SDK를 이용한 ECS, ELB, CloudWatch API 호출 |
+| 계층                  | 책임                              |
+| ------------------- | ------------------------------- |
+| HTTP Handler        | 요청 검증 및 HTTP 응답 처리              |
+| Application Usecase | 세션 집계, 스케일링 판단 및 실행 흐름 처리       |
+| Port Interface      | Application 계층이 필요로 하는 외부 기능 정의 |
+| Adapter             | AWS SDK, Redis 및 외부 API 연동      |
 
-Application Use Case가 AWS SDK의 요청 및 응답 타입을 직접 다루지 않도록 하고, Adapter가 AWS 응답을 내부에서 사용하는 도메인 구조로 변환하도록 구성했습니다.
+이를 통해 핵심 스케일링 로직을 변경하지 않고 실제 AWS ECS와 Fake ECS를 교체할 수 있도록 구성했습니다.
 
-이를 통해 핵심 업무 로직이 특정 AWS SDK 구현에 강하게 결합되는 것을 줄이고, 테스트 시 실제 AWS 호출 대신 Mock 구현을 사용할 수 있도록 했습니다.
+Fake ECS는 고정된 응답을 반환하는 단순 Stub이 아니라, Service와 Task 상태를 보유하고 `PENDING → RUNNING → STOPPED` 전이를 재현하는 상태 기반 Adapter로 구현했습니다.
 
-### 6.4 AWS 리소스 정보를 서비스 단위로 조합
+### 6.3 CloudWatch 연결 지표에서 실제 세션 보고로 전환
 
-Control Plane은 AWS API 응답을 그대로 전달하는 단순 Proxy가 아니라, 운영에 필요한 정보를 서비스 단위로 조합하는 역할을 담당합니다.
-
-하나의 메신저 서비스 상태를 판단하기 위해서는 여러 AWS 리소스의 정보가 필요합니다.
-
-| 정보                       | 조회 대상                  |
-| ------------------------ | ---------------------- |
-| 현재 Task 수와 Deployment 상태 | Amazon ECS             |
-| 실행 중인 Task 상세 상태         | Amazon ECS             |
-| Load Balancer Target 상태  | Elastic Load Balancing |
-| 전체 활성 연결 수               | Amazon CloudWatch      |
-| 최소·최대 Task 수와 목표 연결 수    | Service Registry       |
-
-운영자는 개별 AWS 리소스보다 특정 서비스가 정상적으로 실행 중인지, 몇 개의 Task가 동작하는지, 현재 연결 부하가 어느 수준인지와 같은 서비스 관점의 정보를 필요로 합니다.
-
-따라서 Control Plane은 여러 AWS API의 조회 결과와 Service Registry의 정책을 조합하여 서비스 상태, 연결 압력 및 권장 Task 수를 계산하도록 설계했습니다.
-
-### 6.5 WebSocket 연결 수 기반 부하 판단
-
-WebSocket 서비스는 사용자가 로그인한 동안 장시간 연결을 유지하므로, CPU와 메모리 사용률만으로 실제 연결 부하를 판단하기 어렵습니다.
-
-현재 POC에서는 다음 값으로 Task당 평균 연결 부하를 계산합니다.
+초기 POC에서는 WebSocket 애플리케이션을 수정하지 않고 스케일링 판단 흐름을 검증하기 위해 ALB의 `ActiveConnectionCount`를 사용했습니다.
 
 ```text
 Task당 평균 연결 수
-= 전체 ActiveConnectionCount / 실행 중인 Task 수
+= ActiveConnectionCount / Running Task Count
 ```
 
-계산된 값은 Service Registry에 정의된 Task당 목표 연결 수와 비교하여 현재 연결 압력과 권장 Task 수를 판단하는 데 사용합니다.
+이 방식은 전체 연결 부하를 빠르게 확인할 수 있지만 다음 한계가 있습니다.
 
-다만 평균 연결 수는 특정 Task에 연결이 편중되는 상황을 확인할 수 없으므로, 실제 세션 기반 구조에서는 Task별 보고 값을 함께 사용해야 합니다.
+* 네트워크 연결 수와 인증된 로그인 세션 수가 다를 수 있음
+* Task별 세션 분포를 확인할 수 없음
+* 특정 Task의 세션 편중을 판단할 수 없음
+* Scale-in 대상 Task를 선정하기 어려움
 
-### 6.6 CloudWatch 지표를 초기 판단 기준으로 선택
+이 한계를 보완하기 위해 각 WebSocket Task가 실제 세션 수를 Control Plane에 직접 보고하도록 확장했습니다.
 
-현재 구현에서는 ALB의 `ActiveConnectionCount`를 연결 부하 계산에 사용합니다.
+Control Plane은 Redis에 Task별 최신 세션 수와 보고 시각을 저장하고, 유효한 보고만 집계하여 자동 스케일링에 사용합니다.
 
-CloudWatch 지표를 선택한 이유는 별도의 WebSocket 애플리케이션 수정 없이 기존 AWS 환경에서 바로 조회할 수 있으며, 연결 수를 기반으로 스케일링을 판단하는 전체 흐름을 먼저 구현할 수 있기 때문입니다.
+CloudWatch 연결 지표는 운영 관측 목적으로 유지하고, 자동 스케일링의 기준은 Task가 직접 보고한 실제 세션 수로 분리했습니다.
 
-다만 `ActiveConnectionCount`는 실제 로그인 세션 수와 정확히 일치하지 않고 Task별 분포도 제공하지 않습니다.
+### 6.4 Scale-out과 Scale-in 실행 방식 분리
 
-따라서 CloudWatch 지표를 최종 자동 스케일링 기준으로 선택한 것이 아니라, 연결 기반 판단 로직과 API 구조를 구현하기 위한 초기 지표로 사용했습니다.
+Scale-out과 Scale-in은 기존 사용자 연결에 미치는 영향이 다르므로 동일한 방식으로 처리하지 않았습니다.
 
-### 6.7 스케일링 판단과 실행의 분리
-
-현재 스케일링 판단 기능은 부하 상태를 분석하여 권장 결과를 반환하며, 판단 즉시 ECS Service의 Task 수를 자동으로 변경하지 않습니다.
+Scale-out은 신규 Task를 추가하는 작업이므로 정책 조건을 만족하면 `desiredCount`를 즉시 증가시킵니다.
 
 ```text
-연결 지표 수집
-      │
-      ▼
-스케일링 판단
-      │
-      ├── SCALE_OUT
-      ├── MAINTAIN
-      └── SCALE_IN
-      │
-      ▼
-권장 desiredCount 반환
+세션 증가
+→ Scaling Policy 평가
+→ desiredCount 증가
+→ 신규 Task PENDING
+→ RUNNING 전환
 ```
 
-판단과 실행을 분리한 이유는 POC 단계에서 계산 결과를 먼저 검증하고, 잘못된 지표나 일시적인 부하 변화로 인해 실제 서비스의 Task 수가 즉시 변경되는 것을 방지하기 위해서입니다.
+반면 Scale-in은 실행 중인 WebSocket 연결에 영향을 줄 수 있으므로 즉시 `desiredCount`를 감소시키지 않습니다.
 
-특히 Scale-in은 실행 중인 WebSocket 연결에 영향을 줄 수 있으므로 단순히 현재 연결 수가 낮다는 이유만으로 즉시 수행해서는 안 됩니다.
+```text
+세션 감소
+→ Scale-in Job 생성
+→ 대상 Task 선정 및 보호
+→ Drain 요청
+→ 세션 종료 확인
+→ desiredCount 감소
+```
 
-자동 실행 단계에서는 다음과 같은 안정화 정책이 필요합니다.
+Scale-in은 별도의 Coordinator에서 처리하며, 세션 수가 가장 적은 Task를 대상으로 선정하고 Drain 완료 후 Task 수를 감소시킵니다.
 
-* Scale-out 및 Scale-in Cooldown
-* 임계치 연속 초과 또는 미달 횟수
-* 최소 여유 용량 확보
-* 마지막 스케일링 수행 시각 확인
-* 중복 스케일링 요청 방지
-* Scale-in 대상 Task의 연결 종료 및 Drain 처리
+또한 일시적인 세션 변화와 중복 실행을 방지하기 위해 다음 정책을 적용했습니다.
 
-### 6.8 Redis 기반 최신 세션 상태 저장
-
-향후 실제 세션 기반 구조에서는 각 WebSocket Task가 보고한 최신 세션 수를 Redis에 저장할 예정입니다.
-
-Redis를 선택한 이유는 다음과 같습니다.
-
-* Task별 최신 세션 수를 빠르게 저장하고 조회할 수 있음
-* TTL을 이용하여 종료되거나 보고가 중단된 Task의 오래된 데이터를 제거할 수 있음
-* Control Plane이 여러 인스턴스로 실행되더라도 동일한 상태를 공유할 수 있음
-* 영구 이벤트 보존보다 최신 상태가 중요한 세션 지표의 특성과 적합함
-* 짧은 주기의 집계와 스케일링 평가에 활용하기 쉬움
-
-Redis에 저장된 Task별 세션 수는 Service Registry의 최소·최대 Task 수, 목표 세션 수, Cooldown 등의 정책과 결합하여 스케일링 판단에 사용합니다.
+* Scale-out 및 Scale-in 연속 조건
+* Cooldown
+* 한 번에 증감 가능한 Scale Step
+* `pendingCount`가 존재할 때 추가 Scale-out 차단
+* Scale-in 처리 중인 Task 보호
 
 ## 7. API 명세
 
@@ -639,331 +593,256 @@ Control Plane은 ECS 서비스의 관측, 제어 및 스케일링 판단을 위�
 | 관측 | GET    | `/api/v1/services/{serviceName}/tasks`               | 실행 중인 Task 목록 및 상태 조회          |
 | 관측 | GET    | `/api/v1/services/{serviceName}/target-health`       | Target Group Health 상태 조회      |
 | 관측 | GET    | `/api/v1/services/{serviceName}/connection-pressure` | 연결 수 기반 Task 부하 조회             |
-| 제어 | POST   | `/api/v1/services/{serviceName}/scale`               | ECS Service의 `desiredCount` 변경 |
+| 제어 | POST   | `/api/v1/services/{serviceName}/scale`               | ECS Service의 desiredCount 수동 변경|
 | 제어 | POST   | `/api/v1/services/{serviceName}/redeploy`            | ECS Service 강제 재배포             |
-| 판단 | POST   | `/api/v1/services/{serviceName}/scaling-evaluate`    | 연결 부하 기반 스케일링 필요 여부 판단         |
+| 판단 | POST   | `/api/v1/services/{serviceName}/scaling-evaluate`    | CloudWatch 연결 부하 기반 수동 스케일링 판단        |
+| 수집 | POST   | `/api/v1/services/{serviceName}/tasks/{taskID}/session-report`    | ECS Task의 session count 수집         |
+
 
 상세 요청 및 응답 형식은 [API 상세 문서](./docs/api/README.md)를 참고합니다.
 
 ## 8. 실행 및 배포 방법
 
-`legacy-messenger-control-plane`은 로컬에서 직접 실행하거나 Linux 실행 파일 또는 Docker 컨테이너 형태로 실행할 수 있습니다.
+`legacy-messenger-control-plane`은 Go 애플리케이션으로 구현했으며, 로컬 또는 Linux 환경에서 실행할 수 있습니다.
 
-Control Plane 자체는 ECS Service로 배포하지 않으며, 별도 실행 환경에서 AWS SDK를 통해 ECS, ELB, CloudWatch 리소스를 조회하고 제어합니다.
+프로젝트는 실행 환경에 따라 동일한 Application Usecase에 다음 ECS Adapter를 연결하도록 구성했습니다.
 
-### 8.1 로컬 실행
+* 실제 AWS ECS 연동을 위한 AWS ECS Adapter
+* 로컬 통합 검증을 위한 Fake ECS Adapter
 
-의존성을 설치한 후 애플리케이션을 실행합니다.
+현재 실제 AWS ECS API를 이용한 서비스 관측·수동 제어 검증과, Fake ECS·Redis·Session Provider를 이용한 세션 기반 자동 스케일링 검증을 완료했습니다.
 
-```bash
-go mod tidy
-go run .
-```
+실제 AWS 환경의 자동 Scale-out 및 Drain 기반 Scale-in 통합 검증을 완료한 뒤, 최종 실행 구성과 환경변수, 실행 순서 및 배포 방법을 이 섹션에 정리할 예정입니다.
 
-실행 환경에는 AWS Region, ECS Cluster, Service Registry 경로 등의 설정이 필요합니다.
+기존 AWS 운영 API 검증 당시의 Linux 실행 및 배포 방법은 [`docs/deployment/run-and-deployment.md`](docs/deployment/run-and-deployment.md)를 참고합니다.
 
-```bash
-export AWS_REGION=ap-northeast-2
-export ECS_CLUSTER_NAME=xxxxxx-cluster
-export SERVICE_REGISTRY_PATH=./configs/services.yaml
-
-go run .
-```
-
-AWS 인증 상태는 다음 명령으로 확인할 수 있습니다.
-
-```bash
-aws sts get-caller-identity
-```
-
-### 8.2 Linux 실행 파일 빌드
-
-Linux AMD64 서버에서 실행할 바이너리를 빌드합니다.
-
-```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-go build -o legacy-messenger-control-plane .
-```
-
-빌드된 실행 파일과 설정 파일을 서버에 전달한 후 실행합니다.
-
-```bash
-chmod +x legacy-messenger-control-plane
-./legacy-messenger-control-plane
-```
-
-현재 POC에서는 이 방식으로 Control Plane을 Linux 서버에서 실행하고 AWS 리소스 조회 및 제어 기능을 검증했습니다.
-
-### 8.3 Docker 실행
-
-Docker 이미지를 빌드합니다.
-
-```bash
-docker build -t legacy-messenger-control-plane:latest .
-```
-
-환경 설정을 전달하여 컨테이너를 실행합니다.
-
-```bash
-docker run --rm \
-  --name legacy-messenger-control-plane \
-  -p 8080:8080 \
-  --env-file .env \
-  legacy-messenger-control-plane:latest
-```
-
-로컬 AWS Credentials를 사용하는 경우 테스트 목적으로 AWS 설정 디렉터리를 마운트할 수 있습니다.
-
-```bash
-docker run --rm \
-  --name legacy-messenger-control-plane \
-  -p 8080:8080 \
-  --env-file .env \
-  -v "$HOME/.aws:/root/.aws:ro" \
-  legacy-messenger-control-plane:latest
-```
-
-운영 환경에서는 Access Key를 애플리케이션에 직접 저장하기보다 EC2 Instance Role 등의 IAM Role을 사용하는 방식을 권장합니다.
-
-자세한 Linux 서버 실행 및 배포 방법은 [`docs/deployment/run-and-deployment.md`](docs/deployment/run-and-deployment.md)를 참고합니다.
 
 ## 9. 검증 시나리오 및 결과
 
-본 POC에서는 Control Plane이 AWS ECS 환경에서 실행되는 레거시 메신저 서비스의 상태를 조회하고, 주요 운영 제어 기능을 수행할 수 있는지 검증했습니다.
+본 프로젝트의 최종 검증 목적은 각 WebSocket Task가 보고하는 실제 세션 수를 기준으로 필요한 ECS Task 수를 계산하고, Scale-out과 Scale-in을 실제 운영 흐름에 맞게 안전하게 실행할 수 있는지 확인하는 것입니다.
 
-Control Plane을 Linux 서버에서 실행한 뒤 REST API를 호출하고, API 응답과 AWS ECS Console 및 Target Group에서 확인한 실제 리소스 상태를 비교했습니다.
+특히 다음 항목을 중심으로 검증합니다.
 
-현재 검증 범위는 다음과 같습니다.
+* Task별 세션 보고가 Redis에 정확하게 저장·집계되는지
+* 전체 세션 수와 운영 정책을 기준으로 적정 `desiredCount`를 계산하는지
+* Scale-out 시 신규 Task가 정상적으로 기동되고 세션 보고를 시작하는지
+* `PENDING` Task가 존재할 때 중복 Scale-out을 방지하는지
+* Scale-in 시 세션이 적은 Task를 선정하고 Drain 완료 후 Task 수를 감소시키는지
+* 실제 AWS ECS 환경에서도 Mock 환경과 동일한 스케일링 흐름이 동작하는지
 
-* 관리 대상 서비스 목록 조회
-* ECS Service 및 Task 상태 조회
-* Load Balancer Target Health 조회
-* ECS Service의 `desiredCount` 변경
-* ECS Service 강제 재배포
+검증은 실제 AWS 환경과 로컬 통합 검증 환경을 나누어 3단계로 진행합니다.
 
-WebSocket Task의 실제 세션 수를 Control Plane에 전달하고, 이를 기준으로 스케일링 필요 여부를 판단하는 기능은 현재 검증 범위에서 제외했습니다.
+### 9.1 검증 단계 요약
 
-### 9.1 검증 환경
+| 단계  | 검증 환경                           | 주요 검증 내용                              | 상태 |
+| --- | ------------------------------- | ------------------------------------- | -- |
+| 1단계 | 실제 AWS ECS·ELB                  | 서비스 관측, 수동 `desiredCount` 변경, 재배포     | 완료 |
+| 2단계 | Fake ECS·Redis·Session Provider | 세션 기반 자동 Scale-out과 Drain 기반 Scale-in | 완료 |
+| 3단계 | 실제 AWS ECS·Redis·WS Task        | 실제 AWS 자동 Scale-in/out 통합 동작          | 예정 |
 
-| 구분            | 구성                              |
-| ------------- | ------------------------------- |
-| Control Plane | Go 기반 REST API                  |
-| 실행 환경         | Linux 서버에서 바이너리 직접 실행           |
-| 관리 대상         | AWS ECS EC2 기반 레거시 메신저 서비스      |
-| AWS Region    | `ap-northeast-2`                |
-| ECS Cluster   | `xxxxxx-cluster`                |
-| 주요 검증 대상      | WebSocket ECS Service           |
-| 검증한 AWS 연동    | ECS API, ELB API                |
-| 후속 검증 대상      | CloudWatch 연결 부하, 실제 세션 기반 스케일링 |
-| API 호출 도구     | curl, Postman                   |
+### 9.2 1단계: 실제 AWS 운영 API 검증
 
-Control Plane 자체는 ECS Service로 배포하지 않고 Linux 서버에서 실행했습니다.
+Control Plane을 Linux 서버에서 실행한 뒤 실제 AWS ECS와 Elastic Load Balancing API를 연동하여 관측 및 수동 제어 기능을 검증했습니다.
 
-Control Plane은 서버에 설정된 AWS 인증 정보와 IAM 권한을 이용하여 AWS SDK로 ECS 및 ELB 리소스를 조회하고 제어했습니다.
+#### 검증 환경
 
-### 9.2 검증 시나리오 요약
+| 구분            | 구성                        |
+| ------------- | ------------------------- |
+| Control Plane | Go 기반 REST API            |
+| 실행 환경         | Linux 서버에서 바이너리 직접 실행     |
+| 관리 대상         | AWS ECS EC2 기반 레거시 메신저    |
+| AWS Region    | `ap-northeast-2`          |
+| 검증한 연동        | ECS API, ELB API          |
+| 확인 방법         | API 응답과 AWS Console 상태 비교 |
 
-| 번호 | 검증 시나리오           | 검증 내용                               | 결과 |
-| -- | ----------------- | ----------------------------------- | -- |
-| 1  | 관리 대상 서비스 조회      | Service Registry에 등록된 서비스 목록 확인     | 성공 |
-| 2  | ECS Service 상태 조회 | Desired, Running, Pending Task 수 확인 | 성공 |
-| 3  | 실행 Task 조회        | Task 실행 상태 및 배치 정보 확인               | 성공 |
-| 4  | Target Health 조회  | Load Balancer Target 상태 확인          | 성공 |
-| 5  | 서비스 Scale-out     | `desiredCount` 증가와 신규 Task 실행 확인    | 성공 |
-| 6  | 서비스 Scale-in      | `desiredCount` 감소와 Task 종료 확인       | 성공 |
-| 7  | 서비스 재배포           | `forceNewDeployment`를 통한 Task 교체 확인 | 성공 |
+#### 검증 시나리오
 
-조회 API는 반환된 값이 실제 AWS 리소스 상태와 일치하는지를 확인했습니다.
+| 검증 시나리오           | 검증 내용                                             | 결과 |
+| ----------------- | ------------------------------------------------- | -- |
+| 관리 대상 서비스 조회      | Service Registry 등록 정보 확인                         | 성공 |
+| ECS Service 상태 조회 | `desiredCount`, `runningCount`, `pendingCount` 확인 | 성공 |
+| 실행 Task 조회        | Task 상태와 배치 정보 확인                                 | 성공 |
+| Target Health 조회  | Load Balancer Target 상태 확인                        | 성공 |
+| 수동 Scale-out      | `desiredCount` 증가와 신규 Task 실행 확인                  | 성공 |
+| 수동 Scale-in       | `desiredCount` 감소와 Task 종료 확인                     | 성공 |
+| 강제 재배포            | `forceNewDeployment`를 통한 Task 교체 확인               | 성공 |
 
-제어 API는 요청 성공 여부뿐 아니라 ECS Service, Task 및 Target Group에 실제 변경 사항이 반영되는지를 함께 확인했습니다.
+API에서 반환한 Service, Task 및 Target Health 정보가 AWS Console의 실제 상태와 일치했습니다.
 
-### 9.3 관리 대상 서비스 조회
+또한 운영자가 명시적으로 요청한 `desiredCount` 변경과 재배포가 실제 ECS Service와 Target Group에 반영되는 것을 확인했습니다.
 
-#### 검증 목적
+> 이 단계에서는 AWS Adapter의 관측·제어 기능을 검증했으며, 세션 집계 결과에 따른 자동 스케일링은 포함하지 않았습니다.
 
-Control Plane이 Service Registry에 등록된 관리 대상 서비스 목록을 정상적으로 반환하는지 확인했습니다.
+### 9.3 2단계: Fake ECS 기반 자동 스케일링 검증
 
-#### 요청
+실제 AWS 환경에서 반복적으로 Task 상태 전이와 스케일링 경계조건을 재현하기 위해 Fake ECS와 Session Provider를 구성했습니다.
 
-```http
-GET /api/v1/services
+#### 검증 환경
+
+| 구성요소                 | 역할                                        |
+| -------------------- | ----------------------------------------- |
+| Control Plane        | 세션 집계, Scaling Policy 평가 및 실행             |
+| Redis                | Task별 최신 세션 수와 보고 만료 상태 저장                |
+| Session Provider     | Task별 세션 수를 주기적으로 보고                      |
+| Fake ECS             | Desired, Running, Pending 및 Task 상태 전이 재현 |
+| Scaling Scheduler    | 짧은 주기로 자동 스케일링 평가                         |
+| Scale-in Coordinator | 대상 선정, 보호, Drain 및 Task 감소 처리             |
+
+#### 주요 검증 시나리오
+
+| 검증 시나리오           | 검증 내용                           | 결과 |
+| ----------------- | ------------------------------- | -- |
+| 세션 리포트 수집         | Task별 세션 수와 보고 시각 저장            | 성공 |
+| 보고 만료 처리          | 만료 Task를 전체 세션 합산에서 제외          | 성공 |
+| 자동 Scale-out      | 세션 증가에 따라 `desiredCount` 증가     | 성공 |
+| Task 상태 전이        | 신규 Task의 `PENDING → RUNNING` 전환 | 성공 |
+| 중복 Scale-out 차단   | Pending 상태에서 추가 확장 방지           | 성공 |
+| Scale-in 후보 선정    | 세션 수가 적은 Task 선택                | 성공 |
+| Task 보호           | 처리 중인 Task의 중복 선택 방지            | 성공 |
+| Drain 기반 Scale-in | Session Provider가 보고하는 세션 수가 0이 된 후 desiredCount 감소  | 성공 |
+
+2단계 검증을 통해 세션 보고부터 Redis 집계, Scaling Policy 평가, Scale-out 실행 및 Drain 기반 Scale-in까지 전체 흐름이 로컬 환경에서 동작함을 확인했습니다.
+
+Fake ECS는 고정 응답을 반환하는 단순 Mock이 아니라, 실제 ECS와 유사한 Task 생명주기와 Service 상태를 보유하는 상태 기반 Adapter로 사용했습니다.
+
+### 9.4 3단계: 실제 AWS 자동 스케일링 통합 검증
+
+마지막 단계에서는 2단계에서 검증한 세션 기반 자동 스케일링 흐름을 실제 AWS ECS 환경에 연결합니다.
+
+주요 검증 항목은 다음과 같습니다.
+
+#### 자동 Scale-out
+
+```text
+세션 증가
+→ Control Plane 집계
+→ SCALE_OUT 판단
+→ 실제 ECS desiredCount 증가
+→ 신규 Task PENDING
+→ RUNNING
+→ Target Group Healthy
+→ 신규 Task 세션 보고 시작
 ```
 
-#### 확인 항목
+확인 항목:
 
-* Service Registry에 등록된 서비스만 반환되는지
-* 논리 서비스 이름과 실제 ECS Service 이름이 올바르게 연결되는지
-* 서비스별 주요 운영 설정이 반환되는지
+* Scaling Policy의 판단값과 실제 `desiredCount` 변경값이 일치하는지
+* 신규 Task가 `PENDING → RUNNING`으로 전환되는지
+* 신규 Task가 Target Group Health Check를 통과하는지
+* 신규 Task가 정상적으로 세션 보고를 시작하는지
+* Task 기동 중 중복 Scale-out이 발생하지 않는지
 
-#### 검증 결과
+#### Drain 기반 Scale-in
 
-Service Registry에 정의된 서비스 목록과 운영 설정이 API 응답에 정상적으로 반환되었습니다.
-
-이를 통해 외부 API에서 사용하는 논리 서비스 이름과 AWS의 실제 ECS Service 이름을 분리하고, Control Plane의 관리 대상을 등록된 서비스로 제한할 수 있음을 확인했습니다.
-
-### 9.4 ECS Service 상태 조회
-
-#### 검증 목적
-
-Control Plane이 AWS ECS API를 통해 특정 ECS Service의 현재 상태를 조회할 수 있는지 확인했습니다.
-
-#### 요청
-
-```http
-GET /api/v1/services/{serviceName}
+```text
+세션 감소
+→ SCALE_IN 판단
+→ 대상 Task 선정 및 보호
+→ 실제 WS Task Drain
+→ 세션 0 확인
+→ desiredCount 감소
+→ Task 종료 확인
 ```
 
-#### 확인 항목
+확인 항목:
 
-* `desiredCount`, `runningCount`, `pendingCount`
-* 현재 적용된 Task Definition
-* 서비스 및 Deployment 상태
+* 세션이 가장 적은 Task가 Drain 대상으로 선정되는지
+* Drain 대상 Task에 신규 연결이 배정되지 않는지
+* 기존 세션 종료 후에만 Task 수가 감소하는지
+* Control Plane이 선정한 Task와 실제 ECS 종료 Task가 일치하는지
+* Drain 또는 AWS API 실패 시 작업이 안전하게 중단되는지
 
-#### 검증 결과
+3단계 검증 결과는 실제 AWS 통합 테스트 완료 후 추가할 예정입니다.
 
-API에서 반환한 Task 수와 Task Definition 정보가 AWS ECS Console의 실제 Service 상태와 일치했습니다.
+### 9.5 현재 검증 상태
 
-이를 통해 서비스가 목표한 Task 수만큼 실행되고 있는지와 현재 적용된 배포 상태를 Control Plane에서 확인할 수 있었습니다.
+현재까지 다음 범위를 완료했습니다.
 
-### 9.5 실행 Task 조회
+* 실제 AWS ECS와 ELB의 관측 및 수동 제어 기능 검증
+* Task별 세션 보고와 Redis 기반 최신 상태 관리
+* 세션 기반 Scaling Policy
+* 자동 Scale-out
+* Fake ECS의 `PENDING → RUNNING → STOPPED` 상태 전이
+* 대상 Task 선정과 Drain 기반 Scale-in 흐름
 
-#### 검증 목적
+남은 검증은 실제 AWS ECS 환경에서 세션 기반 자동 Scale-out과 Drain 기반 Scale-in이 Mock 환경과 동일하게 동작하는지 확인하는 것입니다.
 
-특정 ECS Service에서 실행 중인 Task 목록과 개별 Task의 상태를 조회할 수 있는지 확인했습니다.
 
-#### 요청
+## 10. 현재 한계 및 실제 AWS 후속 검증
 
-```http
-GET /api/v1/services/{serviceName}/tasks
-```
+현재까지 실제 AWS ECS·ELB API를 이용한 서비스 관측과 수동 제어 기능을 검증했으며, Fake ECS·Redis·Session Provider를 이용하여 세션 기반 자동 Scale-out과 Drain 기반 Scale-in의 전체 흐름을 검증했습니다.
 
-#### 확인 항목
+다만 2단계 검증은 상태 전이와 스케일링 정책을 반복적으로 확인하기 위한 로컬 통합 환경을 기준으로 수행했습니다. 따라서 실제 AWS ECS 환경에서 발생하는 Task 기동 지연, Load Balancer 등록, Task 종료 선택 및 AWS API 오류까지 포함한 최종 통합 동작은 추가 검증이 필요합니다.
 
-* 실행 중인 Task 목록과 Task ID
-* Task의 실행 및 Health 상태
-* Availability Zone과 Container Instance 배치 정보
+### 10.1 실제 AWS 자동 Scale-out 검증
 
-#### 검증 결과
+세션 집계 결과에 따라 Control Plane이 실제 ECS Service의 `desiredCount`를 증가시키고, 신규 Task가 트래픽 처리와 세션 보고에 참여하는 전체 흐름을 검증합니다.
 
-API에서 반환한 Task 목록과 실행 상태가 AWS ECS Console에서 확인한 정보와 일치했습니다.
+주요 확인 항목은 다음과 같습니다.
 
-또한 Task별 Availability Zone과 Container Instance 정보를 통해 각 Task가 실제로 어느 위치에 배치되었는지 확인할 수 있었습니다.
+* 세션 증가에 따른 Scale-out 판단과 실제 `desiredCount` 변경
+* 신규 Task의 `PENDING → RUNNING` 상태 전이
+* Target Group 등록과 Health Check 통과
+* 신규 Task의 세션 보고 시작
+* Task 기동 중 중복 Scale-out 방지
+* Scale-out 판단부터 신규 Task 투입까지의 소요 시간
 
-### 9.6 Target Health 조회
+### 10.2 실제 AWS Drain 기반 Scale-in 검증
 
-#### 검증 목적
+Scale-in은 기존 WebSocket 연결에 영향을 줄 수 있으므로, 대상 Task의 Drain 완료와 실제 ECS Task 종료 흐름을 함께 검증합니다.
 
-ECS Task가 Load Balancer의 Target Group에 등록되어 실제 트래픽을 처리할 수 있는 상태인지 확인했습니다.
+주요 확인 항목은 다음과 같습니다.
 
-ECS Task가 `RUNNING` 상태이더라도 Target Group Health Check를 통과하지 못하면 정상적인 서비스 상태로 보기 어렵습니다.
+* 세션 수가 가장 적은 Task의 Scale-in 후보 선정
+* Drain 대상 Task의 신규 연결 차단
+* 기존 세션 감소 및 Drain 완료 확인
+* Drain 완료 후 `desiredCount` 감소
+* Control Plane이 선정한 Task와 실제 ECS가 종료한 Task의 일치 여부
+* Drain 실패 또는 시간 초과 시 Scale-in 중단 처리
 
-#### 요청
+특히 ECS Service의 `desiredCount`만 감소시킬 경우 실제 종료 Task의 선택은 ECS Scheduler가 담당하므로, Control Plane이 Drain한 Task와 실제 종료 Task가 동일하게 유지되는지 확인해야 합니다.
 
-```http
-GET /api/v1/services/{serviceName}/target-health
-```
+### 10.3 실제 부하 환경에서의 정책 조정
 
-#### 확인 항목
+현재 Scaling Policy는 Fake ECS와 Session Provider를 이용한 반복 검증을 통해 동작 흐름을 확인한 상태입니다.
 
-* 서비스와 연결된 Target Group
-* 등록된 Target 목록
-* Target별 Health 상태와 실패 사유
+실제 운영 수준의 동시 접속 환경에서는 다음 정책값을 추가로 조정해야 합니다.
 
-#### 검증 결과
+* Task당 목표 세션 수
+* Scale-out 및 Scale-in 임계치
+* 연속 조건 횟수
+* Cooldown 시간
+* 한 번에 증감할 수 있는 Scale Step
+* 세션 리포트 만료 기준
+* Drain 완료 판단 기준
 
-API에서 반환한 Target Group과 Target Health 상태가 AWS Console에서 확인한 값과 일치했습니다.
+실제 Task 기동 시간과 세션 증가 속도를 측정하여 신규 Task가 준비되기 전에 기존 Task의 수용 한계를 초과하지 않도록 여유 용량을 반영할 필요가 있습니다.
 
-이를 통해 ECS Task의 실행 여부뿐 아니라 Load Balancer를 통해 실제 요청을 처리할 수 있는 상태인지 함께 확인할 수 있었습니다.
+### 10.4 장애 및 복구 시나리오
 
-### 9.7 ECS Service Scale-out 및 Scale-in 검증
+현재 POC는 정상적인 스케일링 흐름을 중심으로 검증했습니다. 실제 운영 적용을 위해서는 다음 장애 상황의 처리도 추가로 검증해야 합니다.
 
-#### 검증 목적
+* Redis 장애 또는 세션 리포트 조회 실패
+* AWS ECS API 호출 실패와 Throttling
+* 신규 Task가 `PENDING` 상태에 장시간 머무는 경우
+* 신규 Task가 Target Group Health Check를 통과하지 못하는 경우
+* Drain API 실패 또는 대상 Task 응답 중단
+* Control Plane 재시작 시 진행 중인 Scale-in Job 복구
+* Control Plane 다중 인스턴스 실행 시 중복 스케일링 방지
 
-Control Plane을 통해 ECS Service의 `desiredCount`를 변경하고, 실제 실행 Task 수가 요청한 값에 맞게 조정되는지 확인했습니다.
+현재 Redis 장애 시 세션 정보를 신뢰할 수 없는 상황에서 Scale-in을 실행하지 않는 등, 서비스 축소보다 기존 용량 유지를 우선하는 보수적인 장애 처리 정책이 필요합니다.
 
-#### 요청
+### 10.5 후속 검증 결과 정리
 
-```http
-POST /api/v1/services/{serviceName}/scale
-```
+실제 AWS 자동 스케일링 통합 테스트가 완료되면 다음 결과를 추가할 예정입니다.
 
-```json
-{
-  "desiredCount": 3,
-  "reason": "scale-out verification"
-}
-```
+* 자동 Scale-out 및 Scale-in 실행 로그
+* ECS Service와 Task 상태 변화
+* Target Group Health 변화
+* 세션 수와 권장·실제 `desiredCount` 비교
+* Scale-out 반응 시간과 Drain 소요 시간
+* 발생한 오류와 대응 과정
+* Mock 환경과 실제 AWS 환경의 차이
 
-#### 확인 항목
+의미 있는 운영 이슈가 확인되면 원인, 대응 과정 및 재검증 결과를 별도 트러블슈팅 문서로 정리할 예정입니다.
 
-* 요청한 값으로 `desiredCount`가 변경되는지
-* Scale-out 시 신규 Task가 정상적으로 실행되는지
-* Scale-in 시 종료 대상 Task가 Target Group에서 제외되는지
-
-#### 검증 결과
-
-Scale-out 요청 후 `desiredCount`가 증가하고 신규 Task가 `RUNNING` 상태로 전환되는 것을 확인했습니다. 신규 Task는 Health Check를 통과한 뒤 Target Group의 트래픽 처리 대상에 포함되었습니다.
-
-Scale-in 요청 후에는 `desiredCount`가 감소하고 종료 대상 Task가 Target Group에서 제외되었습니다. 최종 `runningCount`가 변경된 `desiredCount`와 일치하는 것을 확인했습니다.
-
-### 9.8 ECS Service 재배포 검증
-
-#### 검증 목적
-
-Control Plane API를 통해 ECS Service의 `forceNewDeployment`를 실행하고, 기존 Task가 신규 Task로 교체되는지 확인했습니다.
-
-재배포 기능은 동일한 Task Definition을 기준으로 현재 실행 중인 Task를 다시 기동해야 하는 경우 사용할 수 있습니다.
-
-#### 요청
-
-```http
-POST /api/v1/services/{serviceName}/redeploy
-```
-
-#### 확인 항목
-
-* 신규 Deployment가 생성되는지
-* 신규 Task가 정상적으로 실행되는지
-* 기존 Task가 신규 Task로 교체되는지
-
-#### 검증 결과
-
-Redeploy API 호출 이후 ECS Service에 신규 Deployment가 생성되었습니다.
-
-신규 Task가 실행되고 Target Group Health Check를 통과한 뒤 기존 Task가 종료되는 것을 확인했습니다.
-
-재배포 전후의 Task ID와 시작 시각이 달라진 것을 통해 기존 Task가 실제로 신규 Task로 교체되었음을 확인했습니다.
-
-### 9.9 현재 검증 결과
-
-현재 검증을 통해 Control Plane의 기본 관측 및 제어 기능이 AWS ECS 환경에서 정상적으로 동작함을 확인했습니다.
-
-* Service Registry에 등록된 관리 대상 서비스를 조회할 수 있습니다.
-* ECS Service와 실행 중인 Task 상태를 조회할 수 있습니다.
-* Target Health를 통해 실제 트래픽 처리 가능 여부를 확인할 수 있습니다.
-* `desiredCount` 변경을 통해 ECS Service를 Scale-out 및 Scale-in할 수 있습니다.
-* `forceNewDeployment`를 통해 실행 중인 Task를 순차적으로 교체할 수 있습니다.
-* API 응답과 AWS Console에서 확인한 실제 상태 및 변경 결과가 일치했습니다.
-
-이번 검증에서는 Control Plane이 AWS ECS 및 ELB 상태를 올바르게 조회하는지와 운영자의 명시적인 제어 요청이 실제 AWS 리소스에 반영되는지를 중심으로 확인했습니다.
-
-## 10. 현재 한계 및 후속 검증
-
-현재 POC에서는 AWS ECS와 ELB를 이용한 서비스 관측 및 제어 기능을 검증했고, CloudWatch 연결 지표를 기반으로 한 스케일링 판단 로직까지 구현했습니다.
-
-다만 실제 동시 접속 환경에서의 판단 정확도와 판단 결과에 따른 자동 ECS 확장은 아직 검증하지 않았습니다.
-
-또한 현재 사용하는 ALB의 `ActiveConnectionCount`는 실제 로그인 세션 수와 Task별 세션 분포를 정확하게 나타내지 못하므로, 자동 스케일링의 최종 기준으로 사용하기에는 한계가 있습니다.
-
-향후에는 각 WebSocket Task가 자신이 관리 중인 실제 세션 수를 Control Plane에 직접 보고하고, Control Plane이 이를 Redis에 저장·집계하도록 확장할 예정입니다.
-
-해당 구조가 완성되면 수천 명 규모의 동시 접속 환경에서 다음 내용을 검증합니다.
-
-* WebSocket 세션 수와 Control Plane 집계 결과의 일치 여부
-* `POST /api/v1/services/{serviceName}/scaling-evaluate` 판단 결과의 정확성
-* 접속 증가 시 Scale-out 판단과 신규 Task 투입까지의 반응 시간
-* 접속 감소 시 Cooldown과 연결 Drain을 적용한 Scale-in 안정성
-* Task별 세션 편중과 보고 중단 Task의 TTL 처리
-* 스케일링 판단 결과와 실제 ECS `desiredCount` 변경의 연계
-
-부하 테스트 과정에서 의미 있는 운영 이슈가 확인되면 원인, 대응 과정 및 검증 결과를 별도 트러블슈팅 사례로 정리할 예정입니다.
