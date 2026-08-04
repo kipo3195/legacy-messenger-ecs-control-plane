@@ -4,27 +4,13 @@
 AWS ECS 환경에서 운영하기 위한 Go 기반 Control Plane POC입니다.
 
 AWS ECS·ELB·CloudWatch에 분산된 운영 기능을 REST API로 통합하고,
-각 WebSocket Task의 실제 세션 수를 직접 보고받아 Redis에 집계하는 구조를 구현하고,
-Scale-out과 Drain 기반 Scale-in을 자동으로 판단하고 실행하는 구조를 구현했습니다.
+각 WebSocket Task의 실제 세션 수를 직접 보고받아 Redis에 집계하고,
+Scale-out과 Drain 기반 Scale-in을 자동으로 판단·실행하는 구조를 구현했습니다.
 
-프로젝트는 다음 3단계로 검증합니다.
+프로젝트는 실제 AWS 운영 API 검증, Fake ECS 기반 자동 스케일링 검증,
+실제 AWS 자동 스케일링 통합 검증의 3단계로 진행합니다.
 
-1. **AWS 운영 API 검증**
-   실제 AWS ECS 환경에서 Service·Task 상태 조회, Target Health 조회,
-   `desiredCount` 변경 및 강제 재배포 기능을 검증합니다.
-
-2. **Fake ECS 기반 자동 스케일링 통합 검증**
-   Fake ECS와 Session Report Provider를 활용하여 세션 보고, Redis 집계,
-   Task의 `PENDING → RUNNING` 상태 전이, 자동 Scale-out 및
-   Drain 기반 Scale-in의 전체 흐름을 검증합니다.
-
-3. **실제 AWS 자동 스케일링 통합 검증**
-   세션 기반 스케일링 판단 결과를 실제 ECS Service에 반영하고,
-   신규 Task 투입과 Drain 대상 Task 종료까지의 전체 동작을 검증합니다.
-
-현재 기준 1단계와 2단계 검증을 완료했으며,
-마지막 단계로 실제 AWS 환경에서 Control Plane과 ECS Service 간
-세션 기반 자동 Scale-out 및 Drain 기반 Scale-in을 검증할 예정입니다.
+현재 1단계와 2단계를 완료했으며, 실제 AWS 통합 검증을 남겨두고 있습니다.
 
 ## 목차
 
@@ -77,7 +63,7 @@ AWS ECS 환경에서 운영하기 위해 필요한 **관측·제어·세션 기�
 
 ### 2단계. Fake ECS 기반 자동 스케일링 통합 검증 — 완료
 
-실제 AWS 환경에서 반복적으로 Task 상태 전이와 스케일링 경계조건을 테스트할 경우 비용과 테스트 시간이 증가하므로, 실제 `ECSPort`와 동일한 인터페이스를 구현하는 Fake ECS와 별도의 Session Provider를 구성했습니다.
+실제 AWS 환경에서 반복적으로 Task 상태 전이와 스케일링 경계조건을 테스트할 경우 비용과 테스트 시간이 증가하므로, 실제 `ECSPort`와 동일한 인터페이스를 구현하는 Fake ECS와 별도의 Session Report Provider를 구성했습니다.
 
 이를 통해 다음 흐름을 로컬 환경에서 검증했습니다.
 
@@ -88,11 +74,11 @@ AWS ECS 환경에서 운영하기 위해 필요한 **관측·제어·세션 기�
 * Scale-out 시 `desiredCount` 증가와 신규 Task의 `PENDING → RUNNING` 전이
 * 신규 Running Task의 Session Report Provider 등록 및 세션 보고 시작
 * Scale-in 대상 Task 선정과 중복 선택 방지를 위한 보호 처리
-* Drain 요청 이후 Session Provider의 세션 수 감소를 이용한 Drain 완료 조건 검증
-* Drain 완료 후 `desiredCount` 감소 및 Task 종료
+* Drain 요청 이후 Session Report Provider의 세션 수 감소를 이용한 Drain 완료 조건 검증
+* Drain 완료 후 `desiredCount` 감소 및 Task 종료 gb
 
 Fake ECS는 정해진 응답만 반환하는 단순 Mock이 아니라,
-`desiredCount`, `runningCount`, `pendingCount`와 개별 Task 상태를 보유하고 실제 ECS와 유사한 상태 전이를 재현하는 Fake ECS로 구현했습니다.
+`desiredCount`, `runningCount`, `pendingCount`와 개별 Task 상태를 보유하고 실제 ECS와 유사한 상태 전이를 재현하는 상태 기반 Adapter로 구현했습니다.
 
 ### 3단계. 실제 AWS 자동 스케일링 통합 검증 — 예정
 
@@ -254,18 +240,12 @@ Task 상태 전이와 스케일링 정책을 실제 AWS 환경에서 반복 검�
 * 특정 Task를 Drain 대상으로 선택하는 상황을 반복 구성하기 어려움
 * 오류 조건과 비정상 상태를 의도적으로 만들기 어려움
 
-따라서 실제 `ECSPort`와 동일한 인터페이스를 구현하는 Fake ECS를 구성하고, 별도의 Session Provider를 통해 WebSocket Task의 세션 보고 동작을 재현했습니다.
+따라서 실제 `ECSPort`와 동일한 인터페이스를 구현하는 Fake ECS를 구성하고, 별도의 Session Report Provider를 통해 WebSocket Task의 세션 보고 동작을 재현했습니다.
 
-Fake ECS는 다음 상태를 내부적으로 관리합니다.
+Fake ECS는 Service Count와 개별 Task 생명주기를 내부 상태로 관리하여 `PENDING → RUNNING → STOPPED` 전이, Task 기동 지연 및 Scale-in 대상 보호 흐름을 재현합니다.
 
-* Service의 `desiredCount`
-* 실행 중인 `runningCount`
-* 시작 중인 `pendingCount`
-* 개별 Task의 `PENDING`, `RUNNING`, `STOPPED` 상태
-* Task 기동 지연
-* Scale-in 대상 Task 보호 상태
+이를 통해 실제 AWS Adapter와 Application Usecase의 경계를 유지하면서, 세션 보고부터 자동 Scale-out 및 Drain 흐름 기반 Scale-in까지의 전체 과정을 로컬 환경에서 반복 검증할 수 있도록 했습니다.
 
-이를 통해 실제 AWS Adapter와 Application Usecase의 경계를 유지하면서, 세션 보고부터 자동 Scale-out 및 Drain 기반 Scale-in까지의 전체 흐름을 로컬에서 반복 검증할 수 있도록 했습니다.
 
 ### 2.8 해결해야 할 문제
 
@@ -297,7 +277,7 @@ Fake ECS는 다음 상태를 내부적으로 관리합니다.
 * Cooldown, 연속 조건 및 Pending 상태를 반영하여 중복 스케일링 방지
 * Scale-out은 자동 실행하고, Scale-in은 대상 Task의 Drain 완료 후 실행
 
-현재 실제 AWS ECS API를 이용한 운영 기능 검증과 Fake ECS·Session Provider 기반 자동 스케일링 검증을 완료했습니다.
+현재 실제 AWS ECS API를 이용한 운영 기능 검증과 Fake ECS·Session Report Provider 기반 자동 스케일링 검증을 완료했습니다.
 
 다음 단계에서는 실제 AWS ECS 환경에서 세션 기반 자동 Scale-out과 Drain 기반 Scale-in의 통합 동작을 검증할 예정입니다.
 
@@ -316,7 +296,8 @@ AWS ECS·ELB·CloudWatch에 분산된 운영 기능을 하나의 REST API 계층
 
 ### 4.2 Task별 실제 세션 수집 및 Redis 집계
 
-각 WebSocket Task가 자신이 관리하는 실제 세션 수를 주기적으로 보고하고, Control Plane은 Redis에 Task별 최신 상태를 저장합니다.
+각 WebSocket Task가 실제 세션 수를 주기적으로 보고하는 구조를 구현했으며,
+현재는 Session Report Provider를 통해 해당 흐름을 검증했습니다.
 
 * Task별 세션 수와 보고 시각 저장
 * 보고 만료 시각 관리
@@ -353,7 +334,7 @@ Application Usecase가 AWS SDK에 직접 의존하지 않도록 `ECSPort`를 정
 
 * 실제 AWS에서 ECS 상태 조회, 수동 Scale 및 재배포 검증
 * Fake ECS에서 `PENDING`, `RUNNING`, `STOPPED` 상태 전이 재현
-* Session Provider를 이용한 Task별 세션 보고 재현
+* Session Report Provider를 이용한 Task별 세션 보고 재현
 * 세션 보고부터 자동 Scale-out과 Drain 기반 Scale-in까지 로컬 통합 검증
 
 현재 실제 AWS 운영 API 검증과 Fake ECS 기반 자동 스케일링 검증을 완료했으며, 실제 AWS 환경의 자동 Scale-in/out 통합 검증을 남겨두고 있습니다.
@@ -363,7 +344,7 @@ Application Usecase가 AWS SDK에 직접 의존하지 않도록 `ECSPort`를 정
 
 `legacy-messenger-control-plane`은 실제 사용자 메시지와 WebSocket 연결을 처리하는 Data Plane과 분리되어, ECS Service의 상태를 관측하고 세션 부하를 기반으로 실행 상태를 제어하는 Control Plane으로 동작합니다.
 
-WebSocket Task는 자신이 관리 중인 실제 세션 수를 Control Plane에 주기적으로 보고합니다. Control Plane은 Redis에 저장된 Task별 최신 세션 상태를 집계하고, Scaling Policy를 적용하여 자동 Scale-out 또는 Drain 기반 Scale-in을 실행합니다.
+WebSocket Task가 자신이 관리 중인 실제 세션 수를 Control Plane에 주기적으로 보고하도록 설계했으며, 현재는 Session Report Provider를 통해 해당 흐름을 검증했습니다. Control Plane은 Redis에 저장된 Task별 최신 세션 상태를 집계하고, Scaling Policy를 적용하여 자동 Scale-out 또는 Drain 기반 Scale-in을 실행합니다.
 
 ![Legacy Messenger Control Plane Architecture](./docs/images/control-plane-architecture.png)
 
@@ -593,10 +574,10 @@ Control Plane은 ECS 서비스의 관측, 제어 및 스케일링 판단을 위�
 | 관측 | GET    | `/api/v1/services/{serviceName}/tasks`               | 실행 중인 Task 목록 및 상태 조회          |
 | 관측 | GET    | `/api/v1/services/{serviceName}/target-health`       | Target Group Health 상태 조회      |
 | 관측 | GET    | `/api/v1/services/{serviceName}/connection-pressure` | 연결 수 기반 Task 부하 조회             |
-| 제어 | POST   | `/api/v1/services/{serviceName}/scale`               | ECS Service의 desiredCount 수동 변경|
+| 제어 | POST   | `/api/v1/services/{serviceName}/scale`               | ECS Service의 `desiredCount` 수동 변경|
 | 제어 | POST   | `/api/v1/services/{serviceName}/redeploy`            | ECS Service 강제 재배포             |
 | 판단 | POST   | `/api/v1/services/{serviceName}/scaling-evaluate`    | CloudWatch 연결 부하 기반 수동 스케일링 판단        |
-| 수집 | POST   | `/api/v1/services/{serviceName}/tasks/{taskID}/session-report`    | ECS Task의 session count 수집         |
+| 수집 | POST   | `/api/v1/services/{serviceName}/tasks/{taskID}/session-report`    | WebSocket Task의 현재 세션 수 보고        |
 
 
 상세 요청 및 응답 형식은 [API 상세 문서](./docs/api/README.md)를 참고합니다.
@@ -610,7 +591,7 @@ Control Plane은 ECS 서비스의 관측, 제어 및 스케일링 판단을 위�
 * 실제 AWS ECS 연동을 위한 AWS ECS Adapter
 * 로컬 통합 검증을 위한 Fake ECS Adapter
 
-현재 실제 AWS ECS API를 이용한 서비스 관측·수동 제어 검증과, Fake ECS·Redis·Session Provider를 이용한 세션 기반 자동 스케일링 검증을 완료했습니다.
+현재 실제 AWS ECS API를 이용한 서비스 관측·수동 제어 검증과, Fake ECS·Redis·Session Report Provider를 이용한 세션 기반 자동 스케일링 검증을 완료했습니다.
 
 실제 AWS 환경의 자동 Scale-out 및 Drain 기반 Scale-in 통합 검증을 완료한 뒤, 최종 실행 구성과 환경변수, 실행 순서 및 배포 방법을 이 섹션에 정리할 예정입니다.
 
@@ -637,7 +618,7 @@ Control Plane은 ECS 서비스의 관측, 제어 및 스케일링 판단을 위�
 | 단계  | 검증 환경                           | 주요 검증 내용                              | 상태 |
 | --- | ------------------------------- | ------------------------------------- | -- |
 | 1단계 | 실제 AWS ECS·ELB                  | 서비스 관측, 수동 `desiredCount` 변경, 재배포     | 완료 |
-| 2단계 | Fake ECS·Redis·Session Provider | 세션 기반 자동 Scale-out과 Drain 기반 Scale-in | 완료 |
+| 2단계 | Fake ECS·Redis·Session Report Provider | 세션 기반 자동 Scale-out과 Drain 기반 Scale-in | 완료 |
 | 3단계 | 실제 AWS ECS·Redis·WS Task        | 실제 AWS 자동 Scale-in/out 통합 동작          | 예정 |
 
 ### 9.2 1단계: 실제 AWS 운영 API 검증
@@ -675,7 +656,7 @@ API에서 반환한 Service, Task 및 Target Health 정보가 AWS Console의 실
 
 ### 9.3 2단계: Fake ECS 기반 자동 스케일링 검증
 
-실제 AWS 환경에서 반복적으로 Task 상태 전이와 스케일링 경계조건을 재현하기 위해 Fake ECS와 Session Provider를 구성했습니다.
+실제 AWS 환경에서 반복적으로 Task 상태 전이와 스케일링 경계조건을 재현하기 위해 Fake ECS와 Session Report Provider를 구성했습니다.
 
 #### 검증 환경
 
@@ -683,7 +664,7 @@ API에서 반환한 Service, Task 및 Target Health 정보가 AWS Console의 실
 | -------------------- | ----------------------------------------- |
 | Control Plane        | 세션 집계, Scaling Policy 평가 및 실행             |
 | Redis                | Task별 최신 세션 수와 보고 만료 상태 저장                |
-| Session Provider     | Task별 세션 수를 주기적으로 보고                      |
+| Session Report Provider     | Task별 세션 수를 주기적으로 보고                      |
 | Fake ECS             | Desired, Running, Pending 및 Task 상태 전이 재현 |
 | Scaling Scheduler    | 짧은 주기로 자동 스케일링 평가                         |
 | Scale-in Coordinator | 대상 선정, 보호, Drain 및 Task 감소 처리             |
@@ -699,7 +680,7 @@ API에서 반환한 Service, Task 및 Target Health 정보가 AWS Console의 실
 | 중복 Scale-out 차단   | Pending 상태에서 추가 확장 방지           | 성공 |
 | Scale-in 후보 선정    | 세션 수가 적은 Task 선택                | 성공 |
 | Task 보호           | 처리 중인 Task의 중복 선택 방지            | 성공 |
-| Drain 기반 Scale-in | Session Provider가 보고하는 세션 수가 0이 된 후 desiredCount 감소  | 성공 |
+| Drain 기반 Scale-in | Session Report Provider가 보고하는 세션 수가 0이 된 후 `desiredCount` 감소  | 성공 |
 
 2단계 검증을 통해 세션 보고부터 Redis 집계, Scaling Policy 평가, Scale-out 실행 및 Drain 기반 Scale-in까지 전체 흐름이 로컬 환경에서 동작함을 확인했습니다.
 
@@ -765,12 +746,12 @@ Fake ECS는 고정 응답을 반환하는 단순 Mock이 아니라, 실제 ECS�
 * Fake ECS의 `PENDING → RUNNING → STOPPED` 상태 전이
 * 대상 Task 선정과 Drain 기반 Scale-in 흐름
 
-남은 검증은 실제 AWS ECS 환경에서 세션 기반 자동 Scale-out과 Drain 기반 Scale-in이 Mock 환경과 동일하게 동작하는지 확인하는 것입니다.
+남은 검증은 실제 AWS ECS 환경에서 세션 기반 자동 Scale-out과 Drain 기반 Scale-in이 Fake ECS 기반 검증 환경과 동일하게 동작하는지 확인하는 것입니다.
 
 
 ## 10. 현재 한계 및 실제 AWS 후속 검증
 
-현재까지 실제 AWS ECS·ELB API를 이용한 서비스 관측과 수동 제어 기능을 검증했으며, Fake ECS·Redis·Session Provider를 이용하여 세션 기반 자동 Scale-out과 Drain 기반 Scale-in의 전체 흐름을 검증했습니다.
+현재까지 실제 AWS ECS·ELB API를 이용한 서비스 관측과 수동 제어 기능을 검증했으며, Fake ECS·Redis·Session Report Provider를 이용하여 세션 기반 자동 Scale-out과 Drain 기반 Scale-in의 전체 흐름을 검증했습니다.
 
 다만 2단계 검증은 상태 전이와 스케일링 정책을 반복적으로 확인하기 위한 로컬 통합 환경을 기준으로 수행했습니다. 따라서 실제 AWS ECS 환경에서 발생하는 Task 기동 지연, Load Balancer 등록, Task 종료 선택 및 AWS API 오류까지 포함한 최종 통합 동작은 추가 검증이 필요합니다.
 
@@ -804,7 +785,7 @@ Scale-in은 기존 WebSocket 연결에 영향을 줄 수 있으므로, 대상 Ta
 
 ### 10.3 실제 부하 환경에서의 정책 조정
 
-현재 Scaling Policy는 Fake ECS와 Session Provider를 이용한 반복 검증을 통해 동작 흐름을 확인한 상태입니다.
+현재 Scaling Policy는 Fake ECS와 Session Report Provider를 이용한 반복 검증을 통해 동작 흐름을 확인한 상태입니다.
 
 실제 운영 수준의 동시 접속 환경에서는 다음 정책값을 추가로 조정해야 합니다.
 
