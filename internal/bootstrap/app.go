@@ -19,9 +19,9 @@ type App struct {
 
 func NewApp(ctx context.Context) (*App, error) {
 
-	if err := godotenv.Load(); err != nil {
-		log.Println(".env file not found, using system environment variables")
-		return nil, err
+	// 로컬, Definition의 환경변수를 사용
+	if err := godotenv.Load(".env"); err != nil {
+		log.Println(".env not found, using system environment variables")
 	}
 
 	cfg, err := configs.Load()
