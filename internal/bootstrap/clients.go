@@ -8,7 +8,6 @@ import (
 	"legacy-messenger-control-plane/internal/adapters/http/client"
 	"legacy-messenger-control-plane/internal/adapters/redis"
 	"legacy-messenger-control-plane/internal/adapters/sessionprovider"
-	"legacy-messenger-control-plane/internal/adapters/ssh"
 	"legacy-messenger-control-plane/internal/domain"
 	"legacy-messenger-control-plane/internal/ports"
 	"net/http"
@@ -68,9 +67,9 @@ func NewClients(ctx context.Context, cfg *configs.Config) (*Clients, error) {
 		return nil, err
 	}
 
-	sshClient, err := ssh.NewSSHClient(cfg.SSH)
-
-	taskSessionClient, err := redis.NewRedisClient(ctx, cfg.Redis, sshClient)
+	// 로컬 연결은 redis 연결을 위해 ssh 사용, AWS 환경에서는 동일 VPC의 private ip로 접근
+	//sshClient, err := ssh.NewSSHClient(cfg.SSH)
+	taskSessionClient, err := redis.NewRedisClient(ctx, cfg.Redis, nil)
 	if err != nil {
 		return nil, err
 	}
