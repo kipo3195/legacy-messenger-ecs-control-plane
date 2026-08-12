@@ -396,6 +396,11 @@ func (c *ECSClient) UpdateServiceDesiredCount(
 	desiredCount int,
 ) (domain.ECSServiceControlState, error) {
 
+	if desiredCount < 0 {
+		return domain.ECSServiceControlState{},
+			fmt.Errorf("[ecs] desired count must not be negative: %d", desiredCount)
+	}
+
 	out, err := c.client.UpdateService(ctx, &ecs.UpdateServiceInput{
 		Cluster:      aws.String(clusterName),
 		Service:      aws.String(ecsServiceName),

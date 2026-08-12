@@ -202,7 +202,11 @@ func initAuthScaling() *AutoScaleConfig {
 }
 
 func initMock() bool {
-	return true
+	mockFlag := os.Getenv("MOCK_FLAG")
+	if mockFlag == "" || mockFlag == "true" {
+		return true
+	}
+	return false
 }
 
 func initSessionProvider() *SessionProvider {
