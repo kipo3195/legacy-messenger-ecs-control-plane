@@ -335,6 +335,16 @@ func (u *sessionAutoScalingUsecase) applyScalingDecision(
 	switch result.Action {
 
 	case domain.ScalingActionScaleOut:
+		startedAt := time.Now()
+		log.Printf(
+			"[applyScalingDecision] scale-out update started: serviceName=%s ecsServiceName=%s clusterName=%s currentDesiredCount=%d recommendedDesiredCount=%d",
+			result.ServiceName,
+			ecsServiceName,
+			u.ecsCfg.ClusterName,
+			result.CurrentDesiredCount,
+			result.RecommendedDesiredCount,
+		)
+
 		updatedState, err := u.ecsPort.UpdateServiceDesiredCount(
 			ctx,
 			u.ecsCfg.ClusterName,
@@ -342,6 +352,16 @@ func (u *sessionAutoScalingUsecase) applyScalingDecision(
 			result.RecommendedDesiredCount,
 		)
 		if err != nil {
+			log.Printf(
+				"[applyScalingDecision] scale-out update failed: serviceName=%s ecsServiceName=%s currentDesiredCount=%d recommendedDesiredCount=%d elapsed=%s error=%v",
+				result.ServiceName,
+				ecsServiceName,
+				result.CurrentDesiredCount,
+				result.RecommendedDesiredCount,
+				time.Since(startedAt).Round(time.Millisecond),
+				err,
+			)
+
 			return domain.SessionAutoScalingResult{}, fmt.Errorf(
 				"failed to update ECS desired count: serviceName=%s currentDesiredCount=%d recommendedDesiredCount=%d: %w",
 				result.ServiceName,
@@ -358,18 +378,29 @@ func (u *sessionAutoScalingUsecase) applyScalingDecision(
 			result.CurrentDesiredCount,
 			result.RecommendedDesiredCount,
 		)
+		log.Printf(
+			"[applyScalingDecision] scale-out update completed: serviceName=%s ecsServiceName=%s currentDesiredCount=%d recommendedDesiredCount=%d ecsDesiredCount=%d ecsRunningCount=%d ecsPendingCount=%d elapsed=%s",
+			result.ServiceName,
+			ecsServiceName,
+			result.CurrentDesiredCount,
+			result.RecommendedDesiredCount,
+			updatedState.DesiredCount,
+			updatedState.RunningCount,
+			updatedState.PendingCount,
+			time.Since(startedAt).Round(time.Millisecond),
+		)
 
 	case domain.ScalingActionScaleIn:
-
 		// 상태에 따라서 drain 요청과 scale in (실제 ECS에 떠있는 서비스 중단 처리를 구분해서 실행해야되나?)
-
 		return u.requestScaleIn(ecsServiceName, result)
 
-	case domain.ScalingActionKeep:
-		result.Executed = false
+	// case domain.ScalingActionKeep:
+	// 직전 로직인 Evaluate()에서 발생할 가능성 X, !scalingApproved 조건으로 빠질듯
+	// 	result.Executed = false
 
-	case domain.ScalingActionNotScalable:
-		result.Executed = false
+	// case domain.ScalingActionNotScalable:
+	// 직전 로직인 Evaluate()에서 발생할 가능성 X, !scalingApproved 조건으로 빠질듯
+	// 	result.Executed = false
 
 	default:
 		return domain.SessionAutoScalingResult{}, fmt.Errorf(
