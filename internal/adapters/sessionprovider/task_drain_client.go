@@ -1,4 +1,4 @@
-package client
+package sessionprovider
 
 import (
 	"bytes"
@@ -17,7 +17,7 @@ type TaskDrainClient struct {
 	resolver   ports.TaskEndpointResolver
 }
 
-func NewTaskDrainClient(
+func NewTaskSessionDrainClient(
 	resolver ports.TaskEndpointResolver,
 ) *TaskDrainClient {
 	return &TaskDrainClient{

@@ -5,9 +5,9 @@ import (
 	"legacy-messenger-control-plane/configs"
 	"legacy-messenger-control-plane/internal/adapters/aws"
 	"legacy-messenger-control-plane/internal/adapters/fake"
-	"legacy-messenger-control-plane/internal/adapters/http/client"
 	"legacy-messenger-control-plane/internal/adapters/redis"
 	"legacy-messenger-control-plane/internal/adapters/sessionprovider"
+	"legacy-messenger-control-plane/internal/adapters/taskdrain"
 	"legacy-messenger-control-plane/internal/domain"
 	"legacy-messenger-control-plane/internal/ports"
 	"net/http"
@@ -75,7 +75,8 @@ func NewClients(ctx context.Context, cfg *configs.Config) (*Clients, error) {
 	}
 
 	taskEndPointResolver := aws.NewECSTaskEndpointResolver(ecsClient, cfg.ECS, 33002)
-	taskDrain := client.NewTaskDrainClient(taskEndPointResolver)
+	//taskDrain := sessionprovider.NewTaskSessionDrainClient(taskEndPointResolver)
+	taskDrain := taskdrain.NewTaskDrainClient(taskEndPointResolver)
 
 	return &Clients{
 		ECS:         ecsClient,
