@@ -2,6 +2,7 @@ package taskdrain
 
 import (
 	"context"
+	"fmt"
 	"legacy-messenger-control-plane/internal/ports"
 	"net/http"
 	"time"
@@ -34,6 +35,18 @@ func (c *TaskDrainClient) RequestDrain(
 	serviceName string,
 	taskID string,
 ) error {
+	// 가장 적은 session Count를 갖는 task에 drain 요청
+	endpoint, err := c.resolver.ResolveTaskEndpoint(
+		ctx,
+		serviceName,
+		taskID,
+	)
+	if err != nil {
+		fmt.Printf("[RequestDrain] resolve endpoint error! TaskID: %s", taskID)
+		return err
+	}
+
+	fmt.Printf("[RequestDrain] resolve endpoint : %s", endpoint)
 
 	return nil
 }

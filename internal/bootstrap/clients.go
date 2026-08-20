@@ -67,6 +67,11 @@ func NewClients(ctx context.Context, cfg *configs.Config) (*Clients, error) {
 		return nil, err
 	}
 
+	ec2Client, err := aws.NewEC2Client(ctx, cfg.AWS.Region)
+	if err != nil {
+		return nil, err
+	}
+
 	// 로컬 연결은 redis 연결을 위해 ssh 사용, AWS 환경에서는 동일 VPC의 private ip로 접근
 	//sshClient, err := ssh.NewSSHClient(cfg.SSH)
 	taskSessionClient, err := redis.NewRedisClient(ctx, cfg.Redis, nil)
@@ -74,7 +79,7 @@ func NewClients(ctx context.Context, cfg *configs.Config) (*Clients, error) {
 		return nil, err
 	}
 
-	taskEndPointResolver := aws.NewECSTaskEndpointResolver(ecsClient, cfg.ECS, 33002)
+	taskEndPointResolver := aws.NewECSTaskEndpointResolver(ecsClient, cfg.ECS, ec2Client, 33002)
 	//taskDrain := sessionprovider.NewTaskSessionDrainClient(taskEndPointResolver)
 	taskDrain := taskdrain.NewTaskDrainClient(taskEndPointResolver)
 

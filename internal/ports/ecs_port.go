@@ -16,4 +16,5 @@ type ECSPort interface {
 	ForceNewDeployment(ctx context.Context, clusterName string, ecsServiceName string) (domain.ServiceRedeployResult, error)
 	GetRunningTaskIDs(ctx context.Context, clusterName string, ecsServiceName string) ([]string, error)
 	UpdateTaskProtection(ctx context.Context, clusterName string, protectedTaskIDs []string, flag bool) error
+	GetContainerInstanceEC2ID(ctx context.Context, clusterName string, containerInstanceARN string) (string, error)
 }

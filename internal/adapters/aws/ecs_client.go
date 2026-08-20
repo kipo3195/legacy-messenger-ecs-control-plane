@@ -521,15 +521,44 @@ func (c *ECSClient) DescribeTask(
 	task := output.Tasks[0]
 
 	result := domain.ECSTask{
-		TaskARN:       aws.ToString(task.TaskArn),
-		LastStatus:    aws.ToString(task.LastStatus),
-		DesiredStatus: aws.ToString(task.DesiredStatus),
+		TaskARN:              aws.ToString(task.TaskArn),
+		LastStatus:           aws.ToString(task.LastStatus),
+		DesiredStatus:        aws.ToString(task.DesiredStatus),
+		ContainerInstanceARN: aws.ToString(task.ContainerInstanceArn),
 	}
 
 	result.TaskID = extractTaskID(result.TaskARN)
-	result.PrivateIP = extractTaskPrivateIP(task)
+	// bridge 모드라면 extractTaskPrivateIP(task)가 빈 문자열을 반환
+	// result.PrivateIP = extractTaskPrivateIP(task)
+
+	for _, container := range task.Containers {
+		result.NetworkBindings = append(
+			result.NetworkBindings,
+			toNetworkBindings(container.NetworkBindings)...,
+		)
+	}
 
 	return result, nil
+}
+
+func extractHostPort(
+	task types.Task,
+	containerPort int,
+) (int, error) {
+
+	for _, container := range task.Containers {
+		for _, binding := range container.NetworkBindings {
+
+			if int(aws.ToInt32(binding.ContainerPort)) == containerPort {
+				return int(aws.ToInt32(binding.HostPort)), nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf(
+		"host port not found: containerPort=%d",
+		containerPort,
+	)
 }
 
 func extractTaskID(taskARN string) string {
@@ -551,4 +580,46 @@ func extractTaskPrivateIP(task types.Task) string {
 	}
 
 	return ""
+}
+
+func (c *ECSClient) GetContainerInstanceEC2ID(
+	ctx context.Context,
+	clusterName string,
+	containerInstanceARN string,
+) (string, error) {
+
+	output, err := c.client.DescribeContainerInstances(
+		ctx,
+		&ecs.DescribeContainerInstancesInput{
+			Cluster: aws.String(clusterName),
+			ContainerInstances: []string{
+				containerInstanceARN,
+			},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf(
+			"failed to describe container instance: %w",
+			err,
+		)
+	}
+
+	if len(output.ContainerInstances) == 0 {
+		return "", fmt.Errorf(
+			"container instance not found: %s",
+			containerInstanceARN,
+		)
+	}
+
+	ec2InstanceID :=
+		aws.ToString(output.ContainerInstances[0].Ec2InstanceId)
+
+	if ec2InstanceID == "" {
+		return "", fmt.Errorf(
+			"EC2 instance ID is empty: %s",
+			containerInstanceARN,
+		)
+	}
+
+	return ec2InstanceID, nil
 }

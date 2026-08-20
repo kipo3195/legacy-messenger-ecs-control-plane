@@ -376,3 +376,7 @@ func (c *ECSClient) DescribeTask(ctx context.Context, clusterName string, taskID
 		LastStatus: task.LastStatus,
 	}, nil
 }
+
+func (c *ECSClient) GetContainerInstanceEC2ID(ctx context.Context, clusterName string, containerInstanceARN string) (string, error) {
+	return "", nil
+}
