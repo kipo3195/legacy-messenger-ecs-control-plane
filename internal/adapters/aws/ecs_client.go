@@ -477,6 +477,35 @@ func (c *ECSClient) GetRunningTaskIDs(ctx context.Context, clusterName string, e
 }
 
 func (c *ECSClient) UpdateTaskProtection(ctx context.Context, clusterName string, protectedTaskIDs []string, flag bool) error {
+
+	if len(protectedTaskIDs) == 0 {
+		return fmt.Errorf(
+			"failed to update ECS task protection: cluster=%s taskIDs=%v protectionEnabled=%t: %s",
+			clusterName,
+			protectedTaskIDs,
+			flag,
+			"protectedTaskIDs is 0",
+		)
+	}
+
+	_, err := c.client.UpdateTaskProtection(
+		ctx,
+		&ecs.UpdateTaskProtectionInput{
+			Cluster:           aws.String(clusterName),
+			Tasks:             protectedTaskIDs,
+			ProtectionEnabled: flag,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to update ECS task protection: cluster=%s taskIDs=%v protectionEnabled=%t: %w",
+			clusterName,
+			protectedTaskIDs,
+			flag,
+			err,
+		)
+	}
+
 	return nil
 }
 
@@ -518,7 +547,21 @@ func (c *ECSClient) DescribeTask(
 		)
 	}
 
-	task := output.Tasks[0]
+	// 조회할 taskID에 해당하는 task를 매칭 하는 로직
+	var task types.Task
+	found := false
+
+	for _, t := range output.Tasks {
+		if extractTaskID(aws.ToString(t.TaskArn)) == taskID {
+			task = t
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return domain.ECSTask{}, fmt.Errorf("task not found: taskID=%s", taskID)
+	}
 
 	result := domain.ECSTask{
 		TaskARN:              aws.ToString(task.TaskArn),

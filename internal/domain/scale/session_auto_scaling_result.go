@@ -2,6 +2,7 @@ package scale
 
 import (
 	"legacy-messenger-control-plane/internal/domain/serviceevaluation"
+	"legacy-messenger-control-plane/internal/domain/sessionreport"
 )
 
 type SessionAutoScalingResult struct {
@@ -16,7 +17,7 @@ type SessionAutoScalingResult struct {
 	Executed bool                            `json:"executed"`
 	Reason   string                          `json:"reason"`
 
-	SessionReport map[string]int `json:"sessionReport"`
+	SessionReport []sessionreport.SessionReportResult `json:"sessionReport"`
 
 	ECSState interface{} `json:"ecsState,omitempty"`
 }

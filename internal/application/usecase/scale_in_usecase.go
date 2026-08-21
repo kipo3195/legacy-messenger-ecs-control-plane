@@ -6,6 +6,7 @@ import (
 	"legacy-messenger-control-plane/configs"
 	"legacy-messenger-control-plane/internal/domain"
 	"legacy-messenger-control-plane/internal/ports"
+	"log"
 	"time"
 )
 
@@ -111,6 +112,7 @@ func (u *scaleInUsecase) startDrain(
 		ctx,
 		job.ServiceName,
 	)
+	log.Printf("startDrain target Task ID : %s \n", targetTask.TaskID)
 	if err != nil {
 		return err
 	}
@@ -155,6 +157,8 @@ func (u *scaleInUsecase) startDrain(
 			)
 		}
 	}
+
+	log.Printf("startDrain target Task ID : %s, protected task process end.\n", targetTask.TaskID)
 
 	// 대상 Task에 실제 Drain 요청
 	// provider에게 "신규 세션 막고, drain 상태로 들어가라" 요청
@@ -257,6 +261,7 @@ func (u *scaleInUsecase) checkDrain(
 	job domain.ScaleInJob,
 ) error {
 	// drain 중에 현재 task에 연결된 session의 수 점검, 단 TargetTaskID는 Requested시점의 최소 session task임
+	log.Printf("TargetTaskID : %s - 1\n", job.TargetTaskID)
 	report, err := u.taskSessionPort.GetTaskSessionReportByTask(
 		ctx,
 		job.ServiceName,
@@ -265,7 +270,7 @@ func (u *scaleInUsecase) checkDrain(
 	if err != nil {
 		return err
 	}
-
+	log.Printf("TargetTaskID : %s - 2 sessionCount : %d\n", job.TargetTaskID, report.SessionCount)
 	// fake의 경우 startDrain 에서 이미 session provider에게 session Count를 0으로 보고하게 함
 	if report.SessionCount > 0 {
 		return u.coordinator.ResetZeroSessionStreak(
@@ -280,7 +285,7 @@ func (u *scaleInUsecase) checkDrain(
 	if err != nil {
 		return err
 	}
-
+	log.Printf("TargetTaskID : %s - 3 streak : %d\n", job.TargetTaskID, streak)
 	if streak < 3 {
 		return nil
 	}
@@ -289,6 +294,7 @@ func (u *scaleInUsecase) checkDrain(
 	// session count가 안정적으로 접어들었다로 판단가능하므로,
 	// UpdateServiceDesiredCount 내부에서 ECS가 동작하는 것 처럼 desiredCount 변경시 protected를 제외한 task kill
 	// 처리를 위해 fake에서는 session provider에 해당 task 중지 요청
+	log.Printf("TargetTaskID : %s - 4 update Desired Count! \n", job.TargetTaskID)
 	_, err = u.ecsPort.UpdateServiceDesiredCount(
 		ctx,
 		u.ecsCfg.ClusterName,

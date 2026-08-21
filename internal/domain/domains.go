@@ -9,6 +9,7 @@ import (
 	sc "legacy-messenger-control-plane/internal/domain/servicecontrol"
 	se "legacy-messenger-control-plane/internal/domain/serviceevaluation"
 	ss "legacy-messenger-control-plane/internal/domain/servicescale"
+	sr "legacy-messenger-control-plane/internal/domain/sessionreport"
 	th "legacy-messenger-control-plane/internal/domain/targethealth"
 	tk "legacy-messenger-control-plane/internal/domain/task"
 )
@@ -104,3 +105,6 @@ const (
 )
 
 type ECSTask = ecs.ECSTask
+
+// session report
+type SessionReportResult = sr.SessionReportResult

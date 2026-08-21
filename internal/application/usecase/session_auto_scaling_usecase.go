@@ -168,23 +168,41 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		}
 	}
 
-	// 11. 3.에서 구한 stop candidate redis 점검 후 삭제 (추후 ECS에서 task 정보도 조회 하면 좋을 듯)
+	// 11. 3.에서 구한 stop candidate redis 점검 후 삭제
 	u.stopExpiredTasks(ctx, serviceName, stopCandidates)
 
-	sessionReportMap := make(map[string]int, len(normalTask))
+	sessionReportList := make([]domain.SessionReportResult, len(normalTask))
+
 	// 12. 정상적인 session report 데이터를 로깅
 	for _, v := range normalTask {
-		sessionCount := reported[v].SessionCount
-		sessionReportMap[v] = sessionCount
+		if v == "" {
+			continue
+		}
+
+		status := "ERROR"
+
+		a, err := u.ecsPort.DescribeTask(ctx, u.ecsCfg.ClusterName, v)
+		if err == nil {
+			status = a.LastStatus
+		}
+
+		temp := domain.SessionReportResult{
+			TaskID:       v,
+			SessionCount: reported[v].SessionCount,
+			Status:       status,
+		}
+		sessionReportList = append(sessionReportList, temp)
 	}
 
-	result.SessionReport = sessionReportMap
+	// 13. ECS에서 task 상태 조회
 
-	ecsState, err = u.ecsPort.GetServiceControlState(
-		ctx,
-		u.ecsCfg.ClusterName,
-		serviceDef.ECSServiceName,
-	)
+	result.SessionReport = sessionReportList
+
+	// ecsState, err = u.ecsPort.GetServiceControlState(
+	// 	ctx,
+	// 	u.ecsCfg.ClusterName,
+	// 	serviceDef.ECSServiceName,
+	// )
 	return result, nil
 }
 

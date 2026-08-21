@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"legacy-messenger-control-plane/internal/domain"
 	"os"
 	"path/filepath"
 	"sync"
@@ -40,7 +41,7 @@ type ScalingMonitoringResult struct {
 	RecommendedDesiredCount int
 	Action                  any
 	Reason                  string
-	SessionReport           map[string]int
+	SessionReport           []domain.SessionReportResult
 }
 
 func (l *ScalingResultLogger) Write(
@@ -113,15 +114,21 @@ func (l *ScalingResultLogger) Write(
 		)
 	}
 
-	for k, v := range result.SessionReport {
+	for _, value := range result.SessionReport {
+		id := value.TaskID
+		count := value.SessionCount
+		status := value.Status
+
 		content := fmt.Sprintf(
 			`
 [Scaling Evaluation]
-  TaskID               	 : %s
+  TaskID               	   : %s
   SessionCount             : %d
+  ECS Status 			   : %s
 `,
-			k,
-			v,
+			id,
+			count,
+			status,
 		)
 
 		if _, err := file.WriteString(content); err != nil {
