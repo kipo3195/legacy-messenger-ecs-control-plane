@@ -171,7 +171,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 	// 11. 3.에서 구한 stop candidate redis 점검 후 삭제
 	u.stopExpiredTasks(ctx, serviceName, stopCandidates)
 
-	sessionReportList := make([]domain.SessionReportResult, len(normalTask))
+	sessionReportList := make([]domain.SessionReportResult, 0, len(normalTask))
 
 	// 12. 정상적인 session report 데이터를 로깅
 	for _, v := range normalTask {

@@ -1,7 +1,9 @@
 package taskdrain
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"legacy-messenger-control-plane/internal/ports"
 	"net/http"
@@ -27,7 +29,7 @@ func NewTaskDrainClient(
 }
 
 type TaskDrainRequest struct {
-	TaskID string
+	TaskID string `json:"taskId"`
 }
 
 func (c *TaskDrainClient) RequestDrain(
@@ -46,7 +48,54 @@ func (c *TaskDrainClient) RequestDrain(
 		return err
 	}
 
-	fmt.Printf("[RequestDrain] resolve endpoint : %s", endpoint)
+	requestURL := fmt.Sprintf(
+		"http://%s/rest/drain",
+		endpoint,
+	)
+
+	fmt.Printf("[RequestDrain] taskID :%s resolve requestURL : %s\n", taskID, requestURL)
+
+	body, err := json.Marshal(TaskDrainRequest{TaskID: taskID})
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		requestURL,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to create task drain request: taskID=%s: %w",
+			taskID,
+			err,
+		)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf(
+			"failed to call task drain API: taskID=%s endpoint=%s: %w",
+			taskID,
+			endpoint,
+			err,
+		)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK ||
+		resp.StatusCode >= http.StatusMultipleChoices {
+
+		return fmt.Errorf(
+			"task drain API returned unexpected status: taskID=%s statusCode=%d",
+			taskID,
+			resp.StatusCode,
+		)
+	}
+
+	fmt.Printf("[RequestDrain] taskID: %s request drain success. \n", taskID)
 
 	return nil
 }
