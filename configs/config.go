@@ -187,7 +187,7 @@ func initAuthScaling() *AutoScaleConfig {
 	sessionPerTaskStr := os.Getenv("AUTO_SCALE_SESSION_PER_TASK")
 	sessionPerTask, err := strconv.Atoi(sessionPerTaskStr)
 	if err != nil {
-		sessionPerTask = 1500
+		sessionPerTask = 100
 	}
 
 	return &AutoScaleConfig{
