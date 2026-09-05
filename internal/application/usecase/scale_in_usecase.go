@@ -355,7 +355,13 @@ func (u *scaleInUsecase) checkCompletion(
 		)
 	}
 
-	if ecsTask.LastStatus != "STOPPED" {
+	switch ecsTask.LastStatus {
+	case "STOPPED":
+		// complete
+	case "DEACTIVATING", "STOPPING", "RUNNING":
+		// still waiting
+		return nil
+	default:
 		return fmt.Errorf(
 			"%s status is invalid ... status : %s",
 			targetTaskID,

@@ -831,7 +831,11 @@ Scale-in은 기존 WebSocket 연결에 영향을 줄 수 있으므로, 대상 Ta
 | Test Case | Description | Result |
 |---|---|---|
 | [TC-01](./docs/test-cases/tc-01-normal-scale-out.md) | Normal Scale-out | PASS |
-| [TC-02](./docs/test-cases/tc-02-normal-scale-in.md) | Normal Scale-in | - |
+| [TC-02](./docs/test-cases/tc-02-normal-scale-in.md) | Normal Scale-in | PASS |
+| [TC-03](./docs/test-cases/tc-03-active-session-protection.md) | Active Session Protection | - |
+| [TC-04](./docs/test-cases/tc-04-drain-failure.md) | Drain Failure | - |
+| [TC-05](./docs/test-cases/tc-05-scaling-boundary.md) | Min / Max / Cooldown | - |
+| [TC-06](./docs/test-cases/tc-06-stale-session-report.md) | Stale Session Report | - |
 
 각 테스트 케이스의 상세 절차 및 증적은 개별 링크 또는
 [docs/test-cases](./docs/test-cases)에서 확인할 수 있습니다.

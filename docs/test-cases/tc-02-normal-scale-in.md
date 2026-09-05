@@ -147,10 +147,6 @@ PASS
 Scale-in 이전 ECS Service가
 `desired=2 / running=2 / pending=0` 상태임을 확인한다.
 
-전체 sessionCount를 Effective Capacity 기준으로 계산했을 때
-Recommended Desired Count가 현재 desired count보다 작아질 수 있는
-초기 상태임을 확인한다.
-
 ![Scale-in Before](../evidence/tc-02/scale-in-before.png)
 
 ---
@@ -180,6 +176,7 @@ Drain 요청 이후 대상 서비스는 신규 WebSocket connection을
 더 이상 수락하지 않고 기존 connection에 대한 Drain을 시작한다.
 
 ![Scale-in Drain Requested Control Plane](../evidence/tc-02/scale-in-drain-requested-control-plane.png)
+
 ![Scale-in Drain Requested WS](../evidence/tc-02/scale-in-drain-requested-ws.png)
 
 ---
@@ -211,17 +208,11 @@ ECS capacity 감소를 진행한다.
 
 **6. Task Protection & Scale-in Execution**
 
-Drain 완료가 확인된 이후
-계속 유지할 Task에 Task Protection을 적용하고,
+Drain 완료를 확인한 후, 계속 유지할 Task에 Task Protection을 적용하여 Scale-in 과정에서 해당 Task가 종료 대상으로 선택되지 않도록 한다.
 
-ECS Service의 desiredCount를
+이후 ECS Service의 `desiredCount`가 `2 → 1`로 변경된 것을 확인한다.
 
-`2 → 1`
 
-로 변경한 것을 확인한다.
-
-이를 통해 ECS Scale-in 과정에서 유지해야 할 Task가
-종료 대상으로 선택되는 것을 방지한다.
 
 ![Scale-in Decision](../evidence/tc-02/scale-in-decision.png)
 ---
@@ -251,3 +242,5 @@ Control Plane에서도 남은 Task 하나만 정상적으로 관리되고 있으
 Scale-in 프로세스가 종료된 것을 확인한다.
 
 ![Scale-in Success](../evidence/tc-02/scale-in-success.png)
+
+![Scale-in Success Console](../evidence/tc-02/scale-in-success-console.png)

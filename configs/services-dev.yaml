@@ -1,15 +1,16 @@
+# 해당 파일은 control plane의 서비스 매핑을 정의하는 파일로서, 운영환경에서 파일 명칭은 services.yaml로 지정되어야 합니다.
 services:
   ws:
-    ecsServiceName: ws-service
+    ecsServiceName: ws-service # aws console 기준의 name이 필요합니다.
     displayName: WebSocket Service
     scalable: true
     minCount: 0
-    maxCount: 3
+    maxCount: 2
     loadBalancerType: alb
     targetConnectionsPerTask: 30
 
   ds:
-    ecsServiceName: xxxxxx-ds-service
+    ecsServiceName: ds-service
     displayName: Dispatcher Service
     scalable: false
     minCount: 0
@@ -17,7 +18,7 @@ services:
     loadBalancerType: nlb
 
   ns:
-    ecsServiceName: xxxxxx-ns-service
+    ecsServiceName: ns-service
     displayName: Notificator Service
     scalable: false
     minCount: 0
