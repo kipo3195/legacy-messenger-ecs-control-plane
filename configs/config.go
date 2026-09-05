@@ -167,13 +167,14 @@ func initSsh() (*SSHConfig, error) {
 }
 
 type AutoScaleConfig struct {
-	Interval            int
-	SessionPerTask      int     // taske당 최대 session의 수
-	ScaleOutUtilization float64 // scale out 대응해야하는 비율
-	ExpiresPeriod       int     // 만료
-	StopCandidatePeriod int
-	MinTaskCount        int // 최소 task 수
-	MaxTaskCount        int // 최대 task 수
+	Interval              int
+	SessionPerTask        int     // taske당 최대 session의 수
+	ScaleOutUtilization   float64 // scale out 대응해야하는 비율
+	ExpiresPeriod         int     // 만료
+	StopCandidatePeriod   int
+	MinTaskCount          int // 최소 task 수
+	MaxTaskCount          int // 최대 task 수
+	ScaleInAppliedTimeout time.Duration
 }
 
 func initAuthScaling() *AutoScaleConfig {
@@ -190,14 +191,21 @@ func initAuthScaling() *AutoScaleConfig {
 		sessionPerTask = 100
 	}
 
+	scaleInAppliedTimeoutSecondsStr := os.Getenv("AUTO_SCALE_IN_APPLIED_TIMEOUT_SECONDS")
+	scaleInAppliedTimeoutSeconds, err := strconv.Atoi(scaleInAppliedTimeoutSecondsStr)
+	if err != nil || scaleInAppliedTimeoutSeconds <= 0 {
+		scaleInAppliedTimeoutSeconds = 300
+	}
+
 	return &AutoScaleConfig{
-		Interval:            interval,
-		SessionPerTask:      sessionPerTask,
-		ScaleOutUtilization: 0.8,
-		ExpiresPeriod:       30,
-		StopCandidatePeriod: 60,
-		MinTaskCount:        1,
-		MaxTaskCount:        5,
+		Interval:              interval,
+		SessionPerTask:        sessionPerTask,
+		ScaleOutUtilization:   0.8,
+		ExpiresPeriod:         30,
+		StopCandidatePeriod:   60,
+		MinTaskCount:          1,
+		MaxTaskCount:          5,
+		ScaleInAppliedTimeout: time.Duration(scaleInAppliedTimeoutSeconds) * time.Second,
 	}
 }
 

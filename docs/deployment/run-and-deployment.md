@@ -46,7 +46,12 @@ AWS Region과 애플리케이션 설정 경로를 지정합니다.
 export AWS_REGION=ap-northeast-2
 export ECS_CLUSTER_NAME=xxxxxxx-cluster
 export SERVICE_REGISTRY_PATH=./configs/services.yaml
+export AUTO_SCALE_IN_APPLIED_TIMEOUT_SECONDS=300
 ```
+
+| 환경변수                                  | 설명                                      | 기본값 |
+| ------------------------------------- | --------------------------------------- | --- |
+| `AUTO_SCALE_IN_APPLIED_TIMEOUT_SECONDS` | Scale-in `APPLIED` 이후 대상 Task 종료 대기 시간(초) | 300 |
 
 AWS 인증 상태를 확인합니다.
 

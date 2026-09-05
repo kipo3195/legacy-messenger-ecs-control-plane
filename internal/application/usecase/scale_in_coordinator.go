@@ -50,6 +50,8 @@ func (c *ScaleInCoordinator) Request(
 	now := time.Now()
 
 	job.Status = domain.ScaleInStatusRequested
+	job.TargetTaskID = "" // target은 등록 시점이 아니라 MarkDraining에서만 확정
+	job.ProtectedTaskIDs = nil
 	job.RequestedAt = now
 	job.UpdatedAt = now
 
@@ -100,6 +102,21 @@ func (c *ScaleInCoordinator) MarkDraining(
 			"invalid scale-in status transition: current=%s target=%s",
 			job.Status,
 			domain.ScaleInStatusDraining,
+		)
+	}
+
+	if targetTaskID == "" {
+		return fmt.Errorf(
+			"scale-in target task id is empty: serviceName=%s",
+			serviceName,
+		)
+	}
+
+	if job.TargetTaskID != "" {
+		return fmt.Errorf(
+			"scale-in target task is already selected: serviceName=%s targetTaskID=%s",
+			serviceName,
+			job.TargetTaskID,
 		)
 	}
 
@@ -178,8 +195,11 @@ func (c *ScaleInCoordinator) MarkApplied(
 		)
 	}
 
+	now := time.Now()
+
 	job.Status = domain.ScaleInStatusApplied
-	job.UpdatedAt = time.Now()
+	job.AppliedAt = now
+	job.UpdatedAt = now
 
 	return nil
 }

@@ -225,10 +225,11 @@ Scale-out은 신규 Task를 추가하는 작업이므로 기존 사용자 연결
 → Drain 요청
 → 기존 세션 종료 확인
 → desiredCount 감소
+→ APPLIED 상태에서 ECS Task 종료 수렴 대기
 → Task 종료
 ```
 
-이에 따라 Scale-out은 정책 조건을 통과하면 즉시 실행하고, Scale-in은 별도의 Job과 Coordinator를 통해 Drain 완료 후 실행하도록 분리했습니다.
+이에 따라 Scale-out은 정책 조건을 통과하면 즉시 실행하고, Scale-in은 별도의 Job과 Coordinator를 통해 Drain 완료 후 실행하도록 분리했습니다. `desiredCount` 감소 요청 이후에는 대상 Task가 `STOPPED`가 될 때까지 다음 Scheduler tick에서 재확인하며, `RUNNING`, `DEACTIVATING`, `STOPPING`처럼 ECS 종료 과정에서 나타날 수 있는 상태는 일시적인 대기 상태로 처리합니다.
 
 ### 2.7 실제 AWS 반복 검증의 한계
 
@@ -778,10 +779,11 @@ Scale-in은 기존 WebSocket 연결에 영향을 줄 수 있으므로, 대상 Ta
 * Drain 대상 Task의 신규 연결 차단
 * 기존 세션 감소 및 Drain 완료 확인
 * Drain 완료 후 `desiredCount` 감소
+* APPLIED 이후 대상 Task가 `STOPPED` 상태로 수렴하는지 확인
 * Control Plane이 선정한 Task와 실제 ECS가 종료한 Task의 일치 여부
-* Drain 실패 또는 시간 초과 시 Scale-in 중단 처리
+* APPLIED 이후 지정된 시간 안에 `STOPPED`로 수렴하지 않는 경우 Scale-in 실패 처리
 
-특히 ECS Service의 `desiredCount`만 감소시킬 경우 실제 종료 Task의 선택은 ECS Scheduler가 담당하므로, Control Plane이 Drain한 Task와 실제 종료 Task가 동일하게 유지되는지 확인해야 합니다.
+특히 ECS Service의 `desiredCount`만 감소시킬 경우 실제 종료 Task의 선택은 ECS Scheduler가 담당하므로, Control Plane이 Drain한 Task와 실제 종료 Task가 동일하게 유지되는지 확인해야 합니다. 현재 Scale-in Job은 `APPLIED` 진입 시각을 `AppliedAt`으로 저장하고, 이후 timeout 기준을 초과하면 실패 상태로 전환합니다.
 
 ### 10.3 실제 부하 환경에서의 정책 조정
 
@@ -796,6 +798,7 @@ Scale-in은 기존 WebSocket 연결에 영향을 줄 수 있으므로, 대상 Ta
 * 한 번에 증감할 수 있는 Scale Step
 * 세션 리포트 만료 기준
 * Drain 완료 판단 기준
+* APPLIED 이후 Task 종료 수렴 timeout
 
 실제 Task 기동 시간과 세션 증가 속도를 측정하여 신규 Task가 준비되기 전에 기존 Task의 수용 한계를 초과하지 않도록 여유 용량을 반영할 필요가 있습니다.
 

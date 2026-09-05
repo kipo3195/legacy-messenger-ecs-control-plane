@@ -17,6 +17,7 @@ type ScaleInJob struct {
 	ZeroSessionStreak int
 
 	RequestedAt time.Time
+	AppliedAt   time.Time
 	UpdatedAt   time.Time
 
 	LastError string

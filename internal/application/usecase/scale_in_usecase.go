@@ -18,8 +18,9 @@ type scaleInUsecase struct {
 	autoScaleCfg    *configs.AutoScaleConfig
 	scalingPolicy   *ScalingPolicy
 	coordinator     *ScaleInCoordinator
-	targetTaskID    string
 }
+
+const defaultScaleInAppliedTimeout = 5 * time.Minute
 
 type ScaleInUsecase interface {
 	Process(ctx context.Context) error
@@ -43,7 +44,6 @@ func NewScaleInUsecase(
 		ecsCfg:          ecsCfg,
 		scalingPolicy:   scalingPolicy,
 		coordinator:     coordinator,
-		targetTaskID:    "",
 	}
 }
 
@@ -186,9 +186,6 @@ func (u *scaleInUsecase) startDrain(
 		)
 	}
 
-	// 메모리에서 현재 drain 대상 task 정보 관리 - 완료 후 protection 해제용
-	u.targetTaskID = targetTask.TaskID
-
 	// 상태 및 작업 정보 저장
 	return u.coordinator.MarkDraining(
 		job.ServiceName,
@@ -321,6 +318,31 @@ func (u *scaleInUsecase) checkCompletion(
 	ctx context.Context,
 	job domain.ScaleInJob,
 ) error {
+	if job.AppliedAt.IsZero() {
+		return fmt.Errorf(
+			"scale-in applied time is empty: serviceName=%s targetTaskID=%s",
+			job.ServiceName,
+			job.TargetTaskID,
+		)
+	}
+
+	// Applied 이후 Task의 지속적인 "DEACTIVATING", "STOPPING", "RUNNING" 상태를 감지하여 무한정 Applied에 빠지지 않게 처리 하기 위한 timeout 시작
+	timeout := u.autoScaleCfg.ScaleInAppliedTimeout
+	if timeout <= 0 {
+		timeout = defaultScaleInAppliedTimeout
+	}
+
+	appliedElapsed := time.Since(job.AppliedAt)
+	if appliedElapsed > timeout {
+		return fmt.Errorf(
+			"scale-in completion timeout: serviceName=%s targetTaskID=%s elapsed=%s timeout=%s",
+			job.ServiceName,
+			job.TargetTaskID,
+			appliedElapsed,
+			timeout,
+		)
+	}
+	// timeout 종료
 
 	// ECS 서비스 수렴 여부 확인
 	ecsState, err := u.ecsPort.GetServiceControlState(
@@ -355,6 +377,11 @@ func (u *scaleInUsecase) checkCompletion(
 		)
 	}
 
+	// Scale-in 명령을 ECS에 정상적으로 적용했다. 이제 AWS가 실제 Task 종료를 완료하기를 기다리는 상태
+	// 일시적으로 DEACTIVATING, STOPPING, RUNNING 등이 발생. 하지만 기존 코드는 != "STOPPED" 면 에러로 간주했었음.
+	// 실제 콘솔에서도 [scale-in] job failed: serviceName=ws status=APPLIED error=XXXXXXX status is invalid ... status : RUNNING 과 같은 로그 존재
+	// 결과적으로 다음 scheduler tick에서 재확인할 수 있도록 수정함.
+	// 단, nil을 반환하는 상태라도 영원히 APPLIED에 갇히면 안되므로 timeout 로직이 필요함. (AppliedAt)
 	switch ecsTask.LastStatus {
 	case "STOPPED":
 		// complete
@@ -418,9 +445,6 @@ func (u *scaleInUsecase) checkCompletion(
 			err,
 		)
 	}
-
-	// scail in 완료 후 taskID 초기화
-	u.targetTaskID = ""
 
 	// Scale-in 작업을 종료 상태로 바꾸기 위해 호출
 	return u.coordinator.Complete(job.ServiceName)
