@@ -246,9 +246,200 @@ func TestScaleInUsecase_SelectScaleInTarget_PropagatesInvalidReportLoadError(t *
 	}
 }
 
+// 테스트 목표
+// drain 중인 Task의 session count가 0으로 3번 연속 확인되면 Scale-in을 적용한다.
+
+// zero session streak required: 3
+// 1번째 확인: session count = 0 → desiredCount 변경 안함
+// 2번째 확인: session count = 0 → desiredCount 변경 안함
+// 3번째 확인: session count = 0 → desiredCount 변경
+
+func TestScaleInUsecase_CheckDrain_AppliesScaleInAfterThreeZeroSessionChecks(t *testing.T) {
+	// Given - Scale-in 작업이 DRAINING 상태이고 대상 Task의 session count가 0인 상황
+	serviceName := "test-service"
+	ecsServiceName := "test-ecs-service"
+	targetTaskID := "task-a"
+
+	coordinator := NewScaleInCoordinator()
+	err := coordinator.Request(domain.ScaleInJob{
+		ServiceName:         serviceName,
+		ECSServiceName:      ecsServiceName,
+		CurrentDesiredCount: 3,
+		TargetDesiredCount:  2,
+	})
+	if err != nil {
+		t.Fatalf("expected request no error, got %v", err)
+	}
+
+	err = coordinator.MarkDraining(
+		serviceName,
+		targetTaskID,
+		[]string{"task-b", "task-c"},
+	)
+	if err != nil {
+		t.Fatalf("expected mark draining no error, got %v", err)
+	}
+
+	taskSessionPort := &scaleInTargetSelectionTaskSessionPort{
+		reportByTask: domain.SessionReport{SessionCount: 0},
+	}
+
+	ecsPort := &scaleInDrainECSPort{}
+
+	usecase := &scaleInUsecase{
+		taskSessionPort: taskSessionPort,
+		ecsPort:         ecsPort,
+		ecsCfg:          &configs.ECSConfig{ClusterName: "test-cluster"},
+		scalingPolicy:   NewScalingPolicy(),
+		coordinator:     coordinator,
+	}
+
+	job := coordinator.GetActiveJobs()[0]
+
+	// When & Then - 1번째 확인은 streak만 증가하고 desiredCount를 변경하지 않는다.
+	err = usecase.checkDrain(
+		context.Background(),
+		job,
+	)
+	if err != nil {
+		t.Fatalf("expected first check drain no error, got %v", err)
+	}
+
+	if ecsPort.updateDesiredCountCalls != 0 {
+		t.Fatalf("expected no desired count update, got %d", ecsPort.updateDesiredCountCalls)
+	}
+
+	// When & Then - 2번째 확인도 아직 desiredCount를 변경하지 않는다.
+	job = coordinator.GetActiveJobs()[0]
+
+	err = usecase.checkDrain(
+		context.Background(),
+		job,
+	)
+	if err != nil {
+		t.Fatalf("expected second check drain no error, got %v", err)
+	}
+
+	if ecsPort.updateDesiredCountCalls != 0 {
+		t.Fatalf("expected no desired count update, got %d", ecsPort.updateDesiredCountCalls)
+	}
+
+	// When & Then - 3번째 확인에서 desiredCount를 줄이고 상태를 APPLIED로 변경한다.
+	job = coordinator.GetActiveJobs()[0]
+
+	err = usecase.checkDrain(
+		context.Background(),
+		job,
+	)
+	if err != nil {
+		t.Fatalf("expected third check drain no error, got %v", err)
+	}
+
+	if ecsPort.updateDesiredCountCalls != 1 {
+		t.Fatalf("expected desired count update once, got %d", ecsPort.updateDesiredCountCalls)
+	}
+
+	if ecsPort.lastDesiredCount != 2 {
+		t.Fatalf("expected desired count 2, got %d", ecsPort.lastDesiredCount)
+	}
+
+	job = coordinator.GetActiveJobs()[0]
+
+	if job.Status != domain.ScaleInStatusApplied {
+		t.Fatalf("expected APPLIED status, got %s", job.Status)
+	}
+}
+
+// 테스트 목표
+// drain 중인 Task에 session이 남아 있으면 zero session streak를 초기화한다.
+
+// 기존 zero session streak: 2
+// 현재 session count = 1
+// → streak 0으로 초기화
+// → desiredCount 변경 안함
+
+func TestScaleInUsecase_CheckDrain_ResetsZeroSessionStreakWhenSessionRemains(t *testing.T) {
+	// Given - Scale-in 작업이 DRAINING 상태이고 이전 zero session streak가 쌓여있는 상황
+	serviceName := "test-service"
+	ecsServiceName := "test-ecs-service"
+	targetTaskID := "task-a"
+
+	coordinator := NewScaleInCoordinator()
+	err := coordinator.Request(domain.ScaleInJob{
+		ServiceName:         serviceName,
+		ECSServiceName:      ecsServiceName,
+		CurrentDesiredCount: 3,
+		TargetDesiredCount:  2,
+	})
+	if err != nil {
+		t.Fatalf("expected request no error, got %v", err)
+	}
+
+	err = coordinator.MarkDraining(
+		serviceName,
+		targetTaskID,
+		[]string{"task-b", "task-c"},
+	)
+	if err != nil {
+		t.Fatalf("expected mark draining no error, got %v", err)
+	}
+
+	_, err = coordinator.IncreaseZeroSessionStreak(serviceName)
+	if err != nil {
+		t.Fatalf("expected increase zero session streak no error, got %v", err)
+	}
+
+	_, err = coordinator.IncreaseZeroSessionStreak(serviceName)
+	if err != nil {
+		t.Fatalf("expected increase zero session streak no error, got %v", err)
+	}
+
+	taskSessionPort := &scaleInTargetSelectionTaskSessionPort{
+		reportByTask: domain.SessionReport{SessionCount: 1},
+	}
+
+	ecsPort := &scaleInDrainECSPort{}
+
+	usecase := &scaleInUsecase{
+		taskSessionPort: taskSessionPort,
+		ecsPort:         ecsPort,
+		ecsCfg:          &configs.ECSConfig{ClusterName: "test-cluster"},
+		scalingPolicy:   NewScalingPolicy(),
+		coordinator:     coordinator,
+	}
+
+	job := coordinator.GetActiveJobs()[0]
+
+	// When - drain 상태를 확인한다.
+	err = usecase.checkDrain(
+		context.Background(),
+		job,
+	)
+
+	// Then - session이 남아 있으므로 streak를 초기화하고 desiredCount를 변경하지 않는다.
+	if err != nil {
+		t.Fatalf("expected check drain no error, got %v", err)
+	}
+
+	if ecsPort.updateDesiredCountCalls != 0 {
+		t.Fatalf("expected no desired count update, got %d", ecsPort.updateDesiredCountCalls)
+	}
+
+	job = coordinator.GetActiveJobs()[0]
+
+	if job.ZeroSessionStreak != 0 {
+		t.Fatalf("expected zero session streak 0, got %d", job.ZeroSessionStreak)
+	}
+
+	if job.Status != domain.ScaleInStatusDraining {
+		t.Fatalf("expected DRAINING status, got %s", job.Status)
+	}
+}
+
 type scaleInTargetSelectionTaskSessionPort struct {
 	reports              map[string]domain.SessionReport
 	expiredReports       map[string]string
+	reportByTask         domain.SessionReport
 	getReportsErr        error
 	getInvalidReportsErr error
 }
@@ -305,5 +496,109 @@ func (p *scaleInTargetSelectionTaskSessionPort) GetTaskSessionReportByTask(
 	serviceName string,
 	taskID string,
 ) (domain.SessionReport, error) {
-	return domain.SessionReport{}, nil
+	return p.reportByTask, nil
+}
+
+type scaleInDrainECSPort struct {
+	updateDesiredCountCalls int
+	lastDesiredCount        int
+}
+
+func (p *scaleInDrainECSPort) DescribeService(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+) (*domain.ServiceStatus, error) {
+	return nil, nil
+}
+
+func (p *scaleInDrainECSPort) DescribeTask(
+	ctx context.Context,
+	clusterName string,
+	taskID string,
+) (domain.ECSTask, error) {
+	return domain.ECSTask{}, nil
+}
+
+func (p *scaleInDrainECSPort) DescribeTasks(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+	desiredStatus string,
+) ([]domain.TaskStatus, error) {
+	return nil, nil
+}
+
+func (p *scaleInDrainECSPort) GetServiceTargetGroups(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+) ([]domain.ServiceTargetGroup, error) {
+	return nil, nil
+}
+
+func (p *scaleInDrainECSPort) GetServiceTargetGroupArn(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+) (string, error) {
+	return "", nil
+}
+
+func (p *scaleInDrainECSPort) GetServiceControlState(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+) (domain.ECSServiceControlState, error) {
+	return domain.ECSServiceControlState{}, nil
+}
+
+func (p *scaleInDrainECSPort) UpdateServiceDesiredCount(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+	desiredCount int,
+) (domain.ECSServiceControlState, error) {
+	p.updateDesiredCountCalls++
+	p.lastDesiredCount = desiredCount
+
+	return domain.ECSServiceControlState{
+		ECSServiceName: ecsServiceName,
+		DesiredCount:   int32(desiredCount),
+		RunningCount:   int32(desiredCount),
+		PendingCount:   0,
+	}, nil
+}
+
+func (p *scaleInDrainECSPort) ForceNewDeployment(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+) (domain.ServiceRedeployResult, error) {
+	return domain.ServiceRedeployResult{}, nil
+}
+
+func (p *scaleInDrainECSPort) GetRunningTaskIDs(
+	ctx context.Context,
+	clusterName string,
+	ecsServiceName string,
+) ([]string, error) {
+	return nil, nil
+}
+
+func (p *scaleInDrainECSPort) UpdateTaskProtection(
+	ctx context.Context,
+	clusterName string,
+	protectedTaskIDs []string,
+	flag bool,
+) error {
+	return nil
+}
+
+func (p *scaleInDrainECSPort) GetContainerInstanceEC2ID(
+	ctx context.Context,
+	clusterName string,
+	containerInstanceARN string,
+) (string, error) {
+	return "", nil
 }

@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"legacy-messenger-control-plane/internal/domain"
+	"strings"
 	"testing"
 	"time"
 )
@@ -477,6 +478,89 @@ func TestScalingPolicy_DoesNotApproveScaleOutBeforeConsecutiveCountIsMet(t *test
 
 	if result.RecommendedDesiredCount != 4 {
 		t.Fatalf("expected recommended desired count 4, got %d", result.RecommendedDesiredCount)
+	}
+
+	if result.Executed {
+		t.Fatal("expected not executed")
+	}
+}
+
+// 테스트 목표
+// scale-in 조건이 연속 판단 횟수를 만족하기 전까지는 승인하지 않는다.
+
+// scale-in consecutive count: 5
+// 1번째 평가: 승인 안함
+// 2번째 평가: 승인 안함
+// 3번째 평가: 승인 안함
+// 4번째 평가: 승인 안함
+// 5번째 평가: 승인
+
+func TestScalingPolicy_DoesNotApproveScaleInBeforeConsecutiveCountIsMet(t *testing.T) {
+	// Given - scale-in 조건이 반복해서 들어오는 상황
+	policy := NewScalingPolicy()
+
+	demandResult := domain.SessionAutoScalingResult{
+		ServiceName:             "test-service",
+		CurrentDesiredCount:     3,
+		RecommendedDesiredCount: 2,
+		Action:                  domain.ScalingActionScaleIn,
+		Executed:                false,
+		Reason:                  "required task count is below current desired count",
+	}
+
+	ecsState := domain.ECSServiceControlState{
+		DesiredCount: 3,
+		RunningCount: 3,
+		PendingCount: 0,
+	}
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reportCoverage := 1.0
+
+	// When & Then - 1번째부터 4번째 평가까지는 승인되지 않는다.
+	var result domain.SessionAutoScalingResult
+	var approved bool
+
+	for i := 1; i < 5; i++ {
+		result, approved = policy.Evaluate(
+			demandResult,
+			ecsState,
+			reportCoverage,
+			now,
+		)
+
+		if approved {
+			t.Fatalf("expected %d scale-in evaluation not approved", i)
+		}
+
+		if result.Action != domain.ScalingActionScaleIn {
+			t.Fatalf("expected SCALE_IN, got %s", result.Action)
+		}
+
+		expectedReason := "scale-in condition is not persistent enough"
+		if !strings.Contains(result.Reason, expectedReason) {
+			t.Fatalf("expected reason to contain %q, got %s", expectedReason, result.Reason)
+		}
+	}
+
+	// When & Then - 5번째 평가에서 연속 판단 조건을 만족해 승인된다.
+	result, approved = policy.Evaluate(
+		demandResult,
+		ecsState,
+		reportCoverage,
+		now,
+	)
+
+	if !approved {
+		t.Fatal("expected fifth scale-in evaluation approved")
+	}
+
+	if result.Action != domain.ScalingActionScaleIn {
+		t.Fatalf("expected SCALE_IN, got %s", result.Action)
+	}
+
+	if result.RecommendedDesiredCount != 2 {
+		t.Fatalf("expected recommended desired count 2, got %d", result.RecommendedDesiredCount)
 	}
 
 	if result.Executed {
