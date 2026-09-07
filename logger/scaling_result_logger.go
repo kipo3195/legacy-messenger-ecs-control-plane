@@ -42,6 +42,7 @@ type ScalingMonitoringResult struct {
 	Action                  any
 	Reason                  string
 	SessionReport           []domain.SessionReportResult
+	ECSEvents               []domain.ServiceEvent
 }
 
 func (l *ScalingResultLogger) Write(
@@ -112,6 +113,26 @@ func (l *ScalingResultLogger) Write(
 			filePath,
 			err,
 		)
+	}
+
+	for _, event := range result.ECSEvents {
+		content := fmt.Sprintf(
+			`
+	[ECS Event]
+	  CreatedAt               : %s
+	  Message                 : %s
+`,
+			event.CreatedAt.In(l.location).Format("2006-01-02 15:04:05.000 MST"),
+			event.Message,
+		)
+
+		if _, err := file.WriteString(content); err != nil {
+			return fmt.Errorf(
+				"failed to write scaling monitoring result: path=%s: %w",
+				filePath,
+				err,
+			)
+		}
 	}
 
 	for _, value := range result.SessionReport {

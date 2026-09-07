@@ -85,6 +85,7 @@ func (s *SessionScalingScheduler) execute(ctx context.Context) {
 			Action:                  result.Action,
 			Reason:                  result.Reason,
 			SessionReport:           result.SessionReport,
+			ECSEvents:               result.ECSEvents,
 		},
 	)
 

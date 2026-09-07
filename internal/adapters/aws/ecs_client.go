@@ -473,7 +473,88 @@ func mapServiceToRedeployResult(clusterName string, svc types.Service) domain.Se
 }
 
 func (c *ECSClient) GetRunningTaskIDs(ctx context.Context, clusterName string, ecsServiceName string) ([]string, error) {
-	return nil, nil
+	if clusterName == "" {
+		return nil, fmt.Errorf("clusterName is required")
+	}
+
+	if ecsServiceName == "" {
+		return nil, fmt.Errorf("ecsServiceName is required")
+	}
+
+	taskARNs := make([]string, 0)
+	var nextToken *string
+
+	for {
+		listOut, err := c.client.ListTasks(ctx, &ecs.ListTasksInput{
+			Cluster:       aws.String(clusterName),
+			ServiceName:   aws.String(ecsServiceName),
+			DesiredStatus: types.DesiredStatusRunning,
+			NextToken:     nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to list running ecs tasks: serviceName=%s: %w",
+				ecsServiceName,
+				err,
+			)
+		}
+
+		taskARNs = append(taskARNs, listOut.TaskArns...)
+
+		if listOut.NextToken == nil || aws.ToString(listOut.NextToken) == "" {
+			break
+		}
+
+		nextToken = listOut.NextToken
+	}
+
+	if len(taskARNs) == 0 {
+		return nil, nil
+	}
+
+	runningTaskIDs := make([]string, 0, len(taskARNs))
+
+	for start := 0; start < len(taskARNs); start += 100 {
+		end := start + 100
+		if end > len(taskARNs) {
+			end = len(taskARNs)
+		}
+
+		describeOut, err := c.client.DescribeTasks(ctx, &ecs.DescribeTasksInput{
+			Cluster: aws.String(clusterName),
+			Tasks:   taskARNs[start:end],
+		})
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to describe running ecs tasks: serviceName=%s: %w",
+				ecsServiceName,
+				err,
+			)
+		}
+
+		for _, failure := range describeOut.Failures {
+			return nil, fmt.Errorf(
+				"failed to describe running ecs task: arn=%s reason=%s",
+				aws.ToString(failure.Arn),
+				aws.ToString(failure.Reason),
+			)
+		}
+
+		for _, task := range describeOut.Tasks {
+			if aws.ToString(task.LastStatus) != "RUNNING" {
+				continue
+			}
+
+			taskID := extractID(aws.ToString(task.TaskArn))
+			if taskID == "" {
+				continue
+			}
+
+			runningTaskIDs = append(runningTaskIDs, taskID)
+		}
+	}
+
+	return runningTaskIDs, nil
 }
 
 func (c *ECSClient) UpdateTaskProtection(ctx context.Context, clusterName string, protectedTaskIDs []string, flag bool) error {

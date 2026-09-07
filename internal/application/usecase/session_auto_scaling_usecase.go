@@ -197,6 +197,11 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 	// 13. ECS에서 task 상태 조회
 
 	result.SessionReport = sessionReportList
+	u.attachECSServiceDiagnostics(
+		ctx,
+		serviceDef.ECSServiceName,
+		&result,
+	)
 
 	// ecsState, err = u.ecsPort.GetServiceControlState(
 	// 	ctx,
@@ -204,6 +209,39 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 	// 	serviceDef.ECSServiceName,
 	// )
 	return result, nil
+}
+
+func (u *sessionAutoScalingUsecase) attachECSServiceDiagnostics(
+	ctx context.Context,
+	ecsServiceName string,
+	result *domain.SessionAutoScalingResult,
+) {
+	serviceStatus, err := u.ecsPort.DescribeService(
+		ctx,
+		u.ecsCfg.ClusterName,
+		ecsServiceName,
+	)
+	if err != nil {
+		log.Printf(
+			"[scaling diagnostics] failed to describe ecs service: serviceName=%s error=%v",
+			ecsServiceName,
+			err,
+		)
+		return
+	}
+
+	if len(serviceStatus.Events) > 1 {
+		result.ECSEvents = append(
+			[]domain.ServiceEvent(nil),
+			serviceStatus.Events[:1]...,
+		)
+		return
+	}
+
+	result.ECSEvents = append(
+		[]domain.ServiceEvent(nil),
+		serviceStatus.Events...,
+	)
 }
 
 func calculateTotalSessionCount(
@@ -390,7 +428,6 @@ func (u *sessionAutoScalingUsecase) applyScalingDecision(
 		}
 
 		result.Executed = true
-		result.ECSState = updatedState
 		result.Reason = fmt.Sprintf(
 			"scale-out executed successfully: desiredCount=%d -> %d",
 			result.CurrentDesiredCount,
