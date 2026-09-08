@@ -465,12 +465,21 @@ func (c *ScaleInCoordinator) MarkFailed(
 		)
 	}
 
+	previousStatus := job.Status
 	job.Status = domain.ScaleInStatusFailed
 	job.UpdatedAt = time.Now()
 
 	if cause != nil {
 		job.LastError = cause.Error()
 	}
+
+	fmt.Printf(
+		"[scale-in] job status changed: serviceName=%s previousStatus=%s newStatus=%s lastError=%q\n",
+		serviceName,
+		previousStatus,
+		job.Status,
+		job.LastError,
+	)
 
 	return nil
 }
