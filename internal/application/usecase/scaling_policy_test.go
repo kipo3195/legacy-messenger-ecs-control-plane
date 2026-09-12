@@ -81,6 +81,55 @@ func TestScalingPolicy_MaintainsWhenSessionsRequireTwoTasks(t *testing.T) {
 	}
 }
 
+func TestScalingPolicy_SkipsKeepWhenECSServiceIsNotConverged(t *testing.T) {
+	// Given - 콘솔에서 RUNNING task가 중단되어 desired와 running이 벌어진 상황
+	policy := NewScalingPolicy()
+
+	demandResult := domain.SessionAutoScalingResult{
+		ServiceName:             "test-service",
+		CurrentDesiredCount:     2,
+		RecommendedDesiredCount: 2,
+		Action:                  domain.ScalingActionKeep,
+		Executed:                false,
+		Reason:                  "required task count equals current desired count",
+	}
+
+	ecsState := domain.ECSServiceControlState{
+		DesiredCount: 2,
+		RunningCount: 1,
+		PendingCount: 0,
+	}
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reportCoverage := 1.0
+
+	// When
+	result, approved := policy.Evaluate(
+		demandResult,
+		ecsState,
+		reportCoverage,
+		now,
+	)
+
+	// Then
+	if approved {
+		t.Fatal("expected scaling not approved")
+	}
+
+	if result.Action != domain.ScaleActionSkip {
+		t.Fatalf("expected SCALE_ACTION_SKIP, got %s", result.Action)
+	}
+
+	expectedReason := "ecs service is not converged: desired=2 running=1 pending=0"
+	if result.Reason != expectedReason {
+		t.Fatalf("expected reason %q, got %q", expectedReason, result.Reason)
+	}
+
+	if result.Executed {
+		t.Fatal("expected not executed")
+	}
+}
+
 // 테스트 목표
 // scale in 판단
 // effective capacity per task = 80

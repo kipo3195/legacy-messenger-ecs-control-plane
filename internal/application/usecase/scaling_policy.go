@@ -75,17 +75,9 @@ func (p *ScalingPolicy) Evaluate(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// 유지 판단이면 ECS 수렴 여부와 무관하게 실행할 것이 없음
-	if result.Action == domain.ScalingActionKeep {
-		p.resetStreak(result.ServiceName)
-		result.Executed = false
-		result.Reason = "scaling is not required"
-
-		return result, false
-	}
-
 	// 수렴 여부 파악
 	if !isECSConverged(ecsState) {
+		p.resetStreak(result.ServiceName)
 		result.Action = domain.ScaleActionSkip
 		result.Executed = false
 		result.Reason = fmt.Sprintf(
@@ -94,6 +86,15 @@ func (p *ScalingPolicy) Evaluate(
 			ecsState.RunningCount,
 			ecsState.PendingCount,
 		)
+		return result, false
+	}
+
+	// 유지 판단이면 실제 스케일링 실행은 없다.
+	if result.Action == domain.ScalingActionKeep {
+		p.resetStreak(result.ServiceName)
+		result.Executed = false
+		result.Reason = "scaling is not required"
+
 		return result, false
 	}
 
