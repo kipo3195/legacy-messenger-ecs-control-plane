@@ -85,21 +85,34 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		return domain.SessionAutoScalingResult{}, fmt.Errorf("failed to get task session reports: %w", err)
 	}
 
-	// 4. 만료, 중지된 task조회
+	// 4. ECS RUNNING Task 조회
+	runningTaskIDs, err := u.ecsPort.GetRunningTaskIDs(
+		ctx,
+		u.ecsCfg.ClusterName,
+		serviceDef.ECSServiceName,
+	)
+	if err != nil {
+		return domain.SessionAutoScalingResult{},
+			fmt.Errorf("failed to get running tasks: %w", err)
+	}
+
+	// 5. 만료, 중지된 task조회
 	expiredReport, stopCandidates, err := u.taskSessionPort.GetInvalidReportTask(ctx, serviceName, u.autoScale)
 	if err != nil {
 		return domain.SessionAutoScalingResult{}, fmt.Errorf("get task session report expired error")
 	}
-	// 5. report 결과를 순회하면서 유효와 만료 task 분리 (expiredReport는 중지된 task를 포함)
-	_, normalTask := getSeperatedTask(expiredReport, reported)
 
-	// 6. 정상 보고 report 커버리지 계산
+	// 6. ECS RUNNING Task 기준으로 유효 report만 분리한다.
+	// normalTask : ECS RUNNING task 중 report가 있고 expired가 아닌 task만 포함
+	_, normalTask, _ := getSeparatedRunningTask(runningTaskIDs, expiredReport, reported)
+
+	// 7. 정상 보고 report 커버리지 계산
 	// 전체 세션의 수, task당 평균 세션 수, 세션이 적은 task의 순서로 정의된 slice, 정상적으로 보고하는 task의 비율
-	taskSessionInfo := calculateTotalSessionCount(reported, normalTask, int(ecsState.RunningCount))
+	taskSessionInfo := calculateTotalSessionCount(reported, normalTask, len(runningTaskIDs))
 
 	//f("[session count] total : %d, avg : %d, reportCoverage : %0.1f\n", taskSessionInfo.TotalSessionCount, taskSessionInfo.AvgSessionCount, taskSessionInfo.ReportCoverage)
 
-	// 7. 현재 시점에 요구되는 task수 계산
+	// 8. 현재 시점에 요구되는 task수 계산
 	requiredTaskCount := calculateRequiredTaskCount(
 		taskSessionInfo.TotalSessionCount,
 		u.autoScale.SessionPerTask,      // Task당 적절한 session 수
@@ -109,7 +122,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 	)
 	//fmt.Printf("[required task count] count : %d\n", requiredTaskCount)
 
-	// 8. 현재 desiredCount와 필요한 Task 수를 비교
+	// 9. 현재 desiredCount와 필요한 Task 수를 비교
 	demendResult := evaluateScalingDemand(
 		serviceName,
 		taskSessionInfo,
@@ -121,7 +134,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 
 	var result domain.SessionAutoScalingResult
 
-	// 9. 정책 평가 + 수렴 여부 (직전의 요청이 처리되었는지)
+	// 10. 정책 평가 + 수렴 여부 (직전의 요청이 처리되었는지)
 	policyDecision, scalingApproved := u.scalingPolicy.Evaluate(
 		demendResult,
 		ecsState,
@@ -129,7 +142,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		time.Now(),
 	)
 
-	//10. scaling 실행
+	//11. scaling 실행
 	if !scalingApproved {
 		result = policyDecision
 	} else {
@@ -168,12 +181,12 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		}
 	}
 
-	// 11. 3.에서 구한 stop candidate redis 점검 후 삭제
+	// 12. 3.에서 구한 stop candidate redis 점검 후 삭제
 	u.stopExpiredTasks(ctx, serviceName, stopCandidates)
 
 	sessionReportList := make([]domain.SessionReportResult, 0, len(normalTask))
 
-	// 12. 정상적인 session report 데이터를 로깅
+	// 13. 정상적인 session report 데이터를 로깅
 	for _, v := range normalTask {
 		if v == "" {
 			continue
@@ -194,7 +207,7 @@ func (u *sessionAutoScalingUsecase) EvaluateAndScale(ctx context.Context, servic
 		sessionReportList = append(sessionReportList, temp)
 	}
 
-	// 13. ECS에서 task 상태 조회
+	// 14. ECS에서 task 상태 조회
 
 	result.SessionReport = sessionReportList
 	u.attachECSServiceDiagnostics(
@@ -269,8 +282,9 @@ func calculateTotalSessionCount(
 		})
 	}
 
+	// report coverage도 valid RUNNING reports / ECS RUNNING tasks 기준으로 계산
 	var reportCoverage float64
-	if len(normalTask) != 0 {
+	if runningTask > 0 {
 		// 정상적으로 보고를 보내는 task / 정상적으로 돌고있는 task
 		reportCoverage = float64(len(normalTask)) / float64(runningTask)
 	}
@@ -521,21 +535,30 @@ func (u *sessionAutoScalingUsecase) stopExpiredTasks(
 	return nil
 }
 
-func getSeperatedTask(expiredReport map[string]string, reported map[string]domain.SessionReport) ([]string, []string) {
+func getSeparatedRunningTask(
+	runningTaskIDs []string,
+	expiredReport map[string]string,
+	reported map[string]domain.SessionReport,
+) ([]string, []string, []string) {
 	expiredTask := make([]string, 0)
 	normalTask := make([]string, 0)
-	for k := range reported {
-		taskID := k
-		_, exists := expiredReport[taskID]
-		if exists {
+	missingTask := make([]string, 0)
+
+	for _, taskID := range runningTaskIDs {
+		if _, exists := reported[taskID]; !exists {
+			missingTask = append(missingTask, taskID)
+			continue
+		}
+
+		if _, expired := expiredReport[taskID]; expired {
 			expiredTask = append(expiredTask, taskID)
 			continue
 		}
-		// expired report task check
+
 		normalTask = append(normalTask, taskID)
 	}
 
-	return expiredTask, normalTask
+	return expiredTask, normalTask, missingTask
 }
 
 type ScalingPolicyConfig struct {

@@ -39,6 +39,7 @@ func TestScaleInUsecase_SelectScaleInTarget_SelectsLowestSessionTask(t *testing.
 	target, err := usecase.selectScaleInTarget(
 		context.Background(),
 		"test-service",
+		[]string{"task-a", "task-b", "task-c"},
 	)
 
 	// Then - session 수가 가장 적은 task-b가 선택된다.
@@ -84,9 +85,55 @@ func TestScaleInUsecase_SelectScaleInTarget_IgnoresExpiredReports(t *testing.T) 
 	target, err := usecase.selectScaleInTarget(
 		context.Background(),
 		"test-service",
+		[]string{"task-a", "task-b"},
 	)
 
 	// Then - 만료되지 않은 task-b가 선택된다.
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if target.TaskID != "task-b" {
+		t.Fatalf("expected target task-b, got %s", target.TaskID)
+	}
+
+	if target.SessionCount != 5 {
+		t.Fatalf("expected session count 5, got %d", target.SessionCount)
+	}
+}
+
+// 테스트 목표
+// Scale-in 대상 선정 시 ECS RUNNING Task가 아닌 Redis report는 제외한다.
+
+// task-a session = 10, ECS RUNNING
+// task-b session = 5, ECS RUNNING
+// task-x session = 1, Redis에만 존재
+// → task-b 선택
+
+func TestScaleInUsecase_SelectScaleInTarget_IgnoresReportsNotInRunningTasks(t *testing.T) {
+	// Given - Redis에 더 낮은 session 수를 가진 orphan report가 남아 있는 상황
+	taskSessionPort := &scaleInTargetSelectionTaskSessionPort{
+		reports: map[string]domain.SessionReport{
+			"task-a": {SessionCount: 10},
+			"task-b": {SessionCount: 5},
+			"task-x": {SessionCount: 1},
+		},
+		expiredReports: map[string]string{},
+	}
+
+	usecase := &scaleInUsecase{
+		taskSessionPort: taskSessionPort,
+		autoScaleCfg:    &configs.AutoScaleConfig{},
+	}
+
+	// When - ECS RUNNING Task 기준으로 Scale-in 대상 Task를 선정한다.
+	target, err := usecase.selectScaleInTarget(
+		context.Background(),
+		"test-service",
+		[]string{"task-a", "task-b"},
+	)
+
+	// Then - Redis에만 존재하는 task-x는 제외되고 RUNNING Task 중 session이 가장 적은 task-b가 선택된다.
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -130,6 +177,7 @@ func TestScaleInUsecase_SelectScaleInTarget_ReturnsErrorWhenAllReportsExpired(t 
 	_, err := usecase.selectScaleInTarget(
 		context.Background(),
 		"test-service",
+		[]string{"task-a", "task-b"},
 	)
 
 	// Then - 유효한 대상이 없으므로 에러를 반환한다.
@@ -165,6 +213,7 @@ func TestScaleInUsecase_SelectScaleInTarget_ReturnsErrorWhenNoReportsExist(t *te
 	_, err := usecase.selectScaleInTarget(
 		context.Background(),
 		"test-service",
+		[]string{"task-a", "task-b"},
 	)
 
 	// Then - 유효한 대상이 없으므로 에러를 반환한다.
@@ -198,6 +247,7 @@ func TestScaleInUsecase_SelectScaleInTarget_PropagatesReportLoadError(t *testing
 	_, err := usecase.selectScaleInTarget(
 		context.Background(),
 		"test-service",
+		[]string{"task-a"},
 	)
 
 	// Then - report 조회 실패 에러를 감싼 에러를 반환한다.
@@ -234,6 +284,7 @@ func TestScaleInUsecase_SelectScaleInTarget_PropagatesInvalidReportLoadError(t *
 	_, err := usecase.selectScaleInTarget(
 		context.Background(),
 		"test-service",
+		[]string{"task-a"},
 	)
 
 	// Then - 만료 report 조회 실패 에러를 감싼 에러를 반환한다.

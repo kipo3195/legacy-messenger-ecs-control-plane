@@ -513,7 +513,15 @@ func (c *ECSClient) GetRunningTaskIDs(ctx context.Context, clusterName string, e
 	}
 
 	runningTaskIDs := make([]string, 0, len(taskARNs))
+	// DescribeTasks는 한 번에 조회할 수 있는 Task 수에 제한이 있어서 100개 단위로 잘라서 조회
 
+	// 	예를 들어 ECS에:
+	// task-a = RUNNING
+	// task-b = RUNNING
+	// task-c = STOPPED
+	// task-d = PENDING
+
+	// 결과 : runningTaskIDs  []string{ "task-a", "task-b"}
 	for start := 0; start < len(taskARNs); start += 100 {
 		end := start + 100
 		if end > len(taskARNs) {

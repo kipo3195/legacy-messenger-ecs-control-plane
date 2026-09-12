@@ -107,16 +107,6 @@ func (u *scaleInUsecase) startDrain(
 	ctx context.Context,
 	job domain.ScaleInJob,
 ) error {
-	// 가장 적은 수의 session을 갖는 task를 선출
-	targetTask, err := u.selectScaleInTarget(
-		ctx,
-		job.ServiceName,
-	)
-	log.Printf("startDrain target Task ID : %s \n", targetTask.TaskID)
-	if err != nil {
-		return err
-	}
-
 	// running task 조회 -> scale in 대상 제외 처리 (proection)
 	runningTaskIDs, err := u.ecsPort.GetRunningTaskIDs(
 		ctx,
@@ -129,6 +119,18 @@ func (u *scaleInUsecase) startDrain(
 			err,
 		)
 	}
+
+	// ECS RUNNING Task 중 가장 적은 수의 session을 갖는 task를 선출
+	targetTask, err := u.selectScaleInTarget(
+		ctx,
+		job.ServiceName,
+		runningTaskIDs,
+	)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("startDrain target Task ID : %s \n", targetTask.TaskID)
 
 	// 종료 대상 외 Task를 생존 예정 Task로 선정
 	protectedTaskIDs := make([]string, 0)
@@ -197,8 +199,9 @@ func (u *scaleInUsecase) startDrain(
 func (u *scaleInUsecase) selectScaleInTarget(
 	ctx context.Context,
 	serviceName string,
+	runningTaskIDs []string,
 ) (domain.TaskInfo, error) {
-	reports, err := u.taskSessionPort.GetTaskSessionReport( // redis에 있는 report를 직접 조회 해서 가정 적은 session의 task를 찾음
+	reports, err := u.taskSessionPort.GetTaskSessionReport(
 		ctx,
 		serviceName,
 	)
@@ -225,7 +228,13 @@ func (u *scaleInUsecase) selectScaleInTarget(
 	var target domain.TaskInfo
 	found := false
 
-	for taskID, report := range reports {
+	// runningTaskIDs는 ECS 기준으로 찾아낸 RUNNING task ID
+	for _, taskID := range runningTaskIDs {
+		report, reported := reports[taskID]
+		if !reported {
+			continue
+		}
+
 		// 만료되거나 중지 대상으로 분류된 Task 제외
 		if _, expired := expiredReports[taskID]; expired {
 			continue

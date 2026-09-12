@@ -50,7 +50,7 @@ func NewScalingPolicy() *ScalingPolicy {
 		scaleOutCooldown: 30 * time.Second,
 		scaleInCooldown:  1 * time.Minute,
 
-		minReportCoverage: 0.8,
+		minReportCoverage: 1,
 
 		scaleOutStreak: make(map[string]int),
 		scaleInStreak:  make(map[string]int),
